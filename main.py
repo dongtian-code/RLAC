@@ -1,14 +1,14 @@
 import glob, tqdm, wandb, os, json, random, time, jax
 from absl import app, flags
 from ml_collections import config_flags
-from log_utils import setup_wandb, get_exp_name, get_flag_dict, CsvLogger
+from log_utils import setup_wandb, get_exp_name, get_flag_dict, CsvLogger, LoggingHelper
 
 from envs.env_utils import make_env_and_datasets
 from envs.ogbench_utils import make_ogbench_env_and_datasets
 from envs.robomimic_utils import is_robomimic_env
 
 from utils.flax_utils import save_agent
-from utils.datasets import Dataset, ReplayBuffer
+from utils.datasets import ReplayBuffer, process_train_dataset
 
 from evaluation import evaluate
 from agents import agents
@@ -52,18 +52,6 @@ flags.DEFINE_bool('sparse', False, "make the task sparse reward")
 
 flags.DEFINE_bool('save_all_online_states', False, "save all trajectories to npy")
 
-class LoggingHelper:
-    def __init__(self, csv_loggers, wandb_logger):
-        self.csv_loggers = csv_loggers
-        self.wandb_logger = wandb_logger
-        self.first_time = time.time()
-        self.last_time = time.time()
-
-    def log(self, data, prefix, step):
-        assert prefix in self.csv_loggers, prefix
-        self.csv_loggers[prefix].log(data, step=step)
-        self.wandb_logger.log({f'{prefix}/{k}': v for k, v in data.items()}, step=step)
-
 def main(_):
     exp_name = get_exp_name(FLAGS.seed)
     run = setup_wandb(project='qc', group=FLAGS.run_group, name=exp_name)
@@ -104,38 +92,15 @@ def main(_):
     discount = FLAGS.discount
     config["horizon_length"] = FLAGS.horizon_length
 
-    # handle dataset
-    def process_train_dataset(ds):
-        """
-        Process the train dataset to 
-            - handle dataset proportion
-            - handle sparse reward
-            - convert to action chunked dataset
-        """
+    def build_train_dataset(ds):
+        return process_train_dataset(
+            ds,
+            dataset_proportion=FLAGS.dataset_proportion,
+            is_robomimic=is_robomimic_env(FLAGS.env_name),
+            sparse=FLAGS.sparse,
+        )
 
-        ds = Dataset.create(**ds)
-        if FLAGS.dataset_proportion < 1.0:
-            new_size = int(len(ds['masks']) * FLAGS.dataset_proportion)
-            ds = Dataset.create(
-                **{k: v[:new_size] for k, v in ds.items()}
-            )
-        
-        if is_robomimic_env(FLAGS.env_name):
-            penalty_rewards = ds["rewards"] - 1.0
-            ds_dict = {k: v for k, v in ds.items()}
-            ds_dict["rewards"] = penalty_rewards
-            ds = Dataset.create(**ds_dict)
-        
-        if FLAGS.sparse:
-            # Create a new dataset with modified rewards instead of trying to modify the frozen one
-            sparse_rewards = (ds["rewards"] != 0.0) * -1.0
-            ds_dict = {k: v for k, v in ds.items()}
-            ds_dict["rewards"] = sparse_rewards
-            ds = Dataset.create(**ds_dict)
-
-        return ds
-    
-    train_dataset = process_train_dataset(train_dataset)
+    train_dataset = build_train_dataset(train_dataset)
     example_batch = train_dataset.sample(())
     
     agent_class = agents[config['agent_name']]
@@ -174,7 +139,7 @@ def main(_):
                 dataset_only=True,
                 cur_env=env,
             )
-            train_dataset = process_train_dataset(train_dataset)
+            train_dataset = build_train_dataset(train_dataset)
 
         batch = train_dataset.sample_sequence(config['batch_size'], sequence_length=FLAGS.horizon_length, discount=discount)
 

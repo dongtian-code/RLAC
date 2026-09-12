@@ -156,6 +156,31 @@ class Dataset(FrozenDict):
             )
 
 
+def process_train_dataset(ds, dataset_proportion=1.0, is_robomimic=False, sparse=False):
+    """Process a raw dataset dict into a training `Dataset`.
+
+    Handles dataset proportion truncation, the RoboMimic (0, 1) -> (-1, 0) reward
+    shift, and sparsifying rewards. Shared by `main.py` and `main_cw2.py` so the
+    two entry points cannot silently drift apart.
+    """
+    ds = Dataset.create(**ds)
+    if dataset_proportion < 1.0:
+        new_size = int(len(ds['masks']) * dataset_proportion)
+        ds = Dataset.create(**{k: v[:new_size] for k, v in ds.items()})
+
+    if is_robomimic:
+        ds_dict = {k: v for k, v in ds.items()}
+        ds_dict['rewards'] = ds['rewards'] - 1.0
+        ds = Dataset.create(**ds_dict)
+
+    if sparse:
+        ds_dict = {k: v for k, v in ds.items()}
+        ds_dict['rewards'] = (ds['rewards'] != 0.0) * -1.0
+        ds = Dataset.create(**ds_dict)
+
+    return ds
+
+
 class ReplayBuffer(Dataset):
     """Replay buffer class.
 
@@ -217,6 +242,27 @@ class ReplayBuffer(Dataset):
     def clear(self):
         """Clear the replay buffer."""
         self.size = self.pointer = 0
+
+    def state_dict(self):
+        """Return a checkpointable snapshot of the buffer (arrays + cursor)."""
+        return {
+            'buffer': {k: np.asarray(v) for k, v in self._dict.items()},
+            'pointer': self.pointer,
+            'size': self.size,
+            'max_size': self.max_size,
+        }
+
+    def load_state_dict(self, state):
+        """Restore the buffer in place from a snapshot produced by `state_dict`."""
+        if state['max_size'] != self.max_size:
+            raise ValueError(
+                f'Checkpointed replay buffer size {state["max_size"]} does not match '
+                f'the current buffer size {self.max_size}.'
+            )
+        for k, v in state['buffer'].items():
+            self._dict[k][:] = v
+        self.pointer = state['pointer']
+        self.size = state['size']
 
 def add_history(dataset, history_length):
 

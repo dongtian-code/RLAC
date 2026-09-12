@@ -191,6 +191,66 @@ def restore_agent_with_file(agent, file_path):
 
     return agent
 
+def save_checkpoint(path, agent, replay_buffer=None, extra=None):
+    """Atomically write a full training checkpoint (agent + replay buffer + bookkeeping).
+
+    Unlike `save_agent`, this is meant for resuming an interrupted run: it also
+    captures the replay buffer contents and whatever extra bookkeeping state
+    (rng, step counters, wandb run id, ...) the caller passes in.
+
+    Args:
+        path: Destination file path.
+        agent: Agent whose pytree state should be saved.
+        replay_buffer: Optional replay buffer exposing `state_dict()`.
+        extra: Optional dict of additional, picklable bookkeeping state.
+    """
+    state = {
+        'agent': flax.serialization.to_state_dict(agent),
+        'replay_buffer': (
+            replay_buffer.state_dict()
+            if replay_buffer is not None and hasattr(replay_buffer, 'state_dict')
+            else None
+        ),
+        'extra': extra or {},
+    }
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = f'{path}.tmp.{os.getpid()}'
+    try:
+        with open(tmp_path, 'wb') as f:
+            pickle.dump(state, f)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+def load_checkpoint(path, agent, replay_buffer=None):
+    """Load a checkpoint written by `save_checkpoint`.
+
+    Args:
+        agent: Freshly-constructed agent (same config/network shapes as when saved);
+            its params/opt_state/rng get overwritten in place from the checkpoint.
+        replay_buffer: Optional replay buffer to restore into (must be the same size
+            as when the checkpoint was written).
+
+    Returns:
+        (agent, extra) with the restored agent and the extra bookkeeping dict.
+    """
+    with open(path, 'rb') as f:
+        state = pickle.load(f)
+
+    agent = flax.serialization.from_state_dict(agent, state['agent'])
+
+    if replay_buffer is not None and state.get('replay_buffer') is not None:
+        if not hasattr(replay_buffer, 'load_state_dict'):
+            raise TypeError(f'{type(replay_buffer)} does not support load_state_dict')
+        replay_buffer.load_state_dict(state['replay_buffer'])
+
+    print(f'Restored checkpoint from {path}')
+
+    return agent, state.get('extra', {})
+
+
 def restore_agent(agent, restore_path, restore_epoch):
     """Restore the agent from a file.
 

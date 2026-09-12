@@ -1,0 +1,138 @@
+---
+name: "SLURM"
+partition: "allgpu"
+job-name: "RLAC-metaworld"
+num_parallel_jobs: 50
+ntasks: 1
+cpus-per-task: 8
+mem-per-cpu: 8000
+time: 720
+
+preemption_mode: requeue
+sbatch_args:
+  requeue: ""
+  signal: "B:USR1@300"
+
+experiment_copy_src: "../"
+experiment_copy_auto_dst: "/path/to/scratch/CODE_COPY/"
+
+---
+name: "RLAC-metaworld"
+
+# Single seed per task, all 50 ML1 tasks (see the `grid.env_name` list below) --
+# repetitions=1 means each grid point (task) gets exactly one seed.
+repetitions: 1
+reps_per_job: 1
+reps_in_parallel: 1
+
+# MetaWorld has no offline dataset, so offline_steps must be 0 (pure online) --
+# see envs/metaworld_utils.py and RLACExperiment.initialize()'s no-dataset branch.
+# iterations = ceil(online_steps / chunk_size) = 1_000_000 / 5_000 = 200.
+iterations: &iterations 200
+num_checkpoints: 20
+overwrite_checkpoints: true
+
+path: "/path/to/scratch/rlac_exp_result"
+
+auto_resume_from_latest_checkpoint: true
+resume_dir_name: "resume"
+
+wandb:
+  project: "qc"
+  group: "cw2_metaworld_online"
+  entity: null
+
+params:
+  # MetaWorld task ids follow "metaworld/<task>-v2" (registered by `fancy_gym`
+  # on import -- see envs/metaworld_utils.py). Requires, in this order:
+  #   pip install "git+https://github.com/dongtian-code/Metaworld.git@dt_branch"
+  #   pip install "git+https://github.com/DongTian95/fancy_gymnasium.git@dt_branch"
+  # (or point pip at your local checkouts, e.g. /home/dong/Metaworld and
+  # /home/dong/fancy_gymnasium, with `pip install -e`).
+  env_name: "metaworld/reach-v2"
+
+  offline_steps: 0            # must stay 0 -- there is no offline data for MetaWorld
+  online_steps: 1000000
+  buffer_size: 1000000        # empty buffer at start, no offline data to seed it from
+  chunk_size: &chunk_size 5000
+  log_interval: *chunk_size
+  eval_interval: 20000
+  save_interval: -1
+  start_training: 5000        # random actions until the buffer has this many transitions
+
+  utd_ratio: 1
+  discount: 0.99
+
+  eval_episodes: 20
+  video_episodes: 0
+  video_frame_skip: 3
+
+  # Unused for MetaWorld (no dataset), left at defaults.
+  dataset_proportion: 1.0
+  dataset_replace_interval: 1000
+  ogbench_dataset_dir: null
+
+  horizon_length: 5
+  sparse: false
+  save_all_online_states: false   # MetaWorld's env has no get_state(); leave this off
+
+  agent:
+    agent_name: "acfql"
+    lr: 0.0003
+    batch_size: 256
+
+# All 50 MetaWorld ML1/MT50 tasks. With repetitions=1 this unfolds into exactly
+# 50 jobs, one seed each.
+grid:
+  env_name: [
+    "metaworld/assembly-v2",
+    "metaworld/basketball-v2",
+    "metaworld/bin-picking-v2",
+    "metaworld/box-close-v2",
+    "metaworld/button-press-topdown-v2",
+    "metaworld/button-press-topdown-wall-v2",
+    "metaworld/button-press-v2",
+    "metaworld/button-press-wall-v2",
+    "metaworld/coffee-button-v2",
+    "metaworld/coffee-pull-v2",
+    "metaworld/coffee-push-v2",
+    "metaworld/dial-turn-v2",
+    "metaworld/disassemble-v2",
+    "metaworld/door-close-v2",
+    "metaworld/door-lock-v2",
+    "metaworld/door-open-v2",
+    "metaworld/door-unlock-v2",
+    "metaworld/drawer-close-v2",
+    "metaworld/drawer-open-v2",
+    "metaworld/faucet-open-v2",
+    "metaworld/faucet-close-v2",
+    "metaworld/hammer-v2",
+    "metaworld/hand-insert-v2",
+    "metaworld/handle-press-side-v2",
+    "metaworld/handle-press-v2",
+    "metaworld/handle-pull-side-v2",
+    "metaworld/handle-pull-v2",
+    "metaworld/lever-pull-v2",
+    "metaworld/peg-insert-side-v2",
+    "metaworld/pick-place-wall-v2",
+    "metaworld/pick-out-of-hole-v2",
+    "metaworld/reach-v2",
+    "metaworld/push-back-v2",
+    "metaworld/push-v2",
+    "metaworld/pick-place-v2",
+    "metaworld/plate-slide-v2",
+    "metaworld/plate-slide-side-v2",
+    "metaworld/plate-slide-back-v2",
+    "metaworld/plate-slide-back-side-v2",
+    "metaworld/peg-unplug-side-v2",
+    "metaworld/push-wall-v2",
+    "metaworld/soccer-v2",
+    "metaworld/stick-push-v2",
+    "metaworld/stick-pull-v2",
+    "metaworld/reach-wall-v2",
+    "metaworld/shelf-place-v2",
+    "metaworld/sweep-into-v2",
+    "metaworld/sweep-v2",
+    "metaworld/window-open-v2",
+    "metaworld/window-close-v2",
+  ]

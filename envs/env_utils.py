@@ -136,6 +136,11 @@ def make_env_and_datasets(env_name, frame_stack=None, action_clip_eps=1e-5):
         eval_env = EpisodeMonitor(eval_env)
         dataset = robomimic_utils.get_dataset(env, env_name)
         train_dataset, val_dataset = dataset, None
+    elif env_name.startswith('metaworld/'):
+        # MetaWorld. No offline dataset exists for it -- online-only (offline_steps=0).
+        from envs import metaworld_utils
+
+        env, eval_env, train_dataset, val_dataset = metaworld_utils.make_metaworld_env_and_datasets(env_name)
     else:
         raise ValueError(f'Unsupported environment: {env_name}')
 
@@ -148,9 +153,10 @@ def make_env_and_datasets(env_name, frame_stack=None, action_clip_eps=1e-5):
 
     # Clip dataset actions.
     if action_clip_eps is not None:
-        train_dataset = train_dataset.copy(
-            add_or_replace=dict(actions=np.clip(train_dataset['actions'], -1 + action_clip_eps, 1 - action_clip_eps))
-        )
+        if train_dataset is not None:
+            train_dataset = train_dataset.copy(
+                add_or_replace=dict(actions=np.clip(train_dataset['actions'], -1 + action_clip_eps, 1 - action_clip_eps))
+            )
         if val_dataset is not None:
             val_dataset = val_dataset.copy(
                 add_or_replace=dict(actions=np.clip(val_dataset['actions'], -1 + action_clip_eps, 1 - action_clip_eps))

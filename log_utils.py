@@ -2,12 +2,28 @@ import os
 import tempfile
 from datetime import datetime
 
+import time
+
 import absl.flags as flags
 import ml_collections
 import numpy as np
 import wandb
 from PIL import Image, ImageEnhance
 import glob
+
+
+class LoggingHelper:
+    def __init__(self, csv_loggers, wandb_logger):
+        self.csv_loggers = csv_loggers
+        self.wandb_logger = wandb_logger
+        self.first_time = time.time()
+        self.last_time = time.time()
+
+    def log(self, data, prefix, step):
+        assert prefix in self.csv_loggers, prefix
+        self.csv_loggers[prefix].log(data, step=step)
+        self.wandb_logger.log({f'{prefix}/{k}': v for k, v in data.items()}, step=step)
+
 
 class CsvLogger:
     """CSV logger for logging metrics to a CSV file."""
@@ -69,19 +85,32 @@ def setup_wandb(
     group=None,
     name=None,
     mode='online',
+    run_id=None,
+    resume=None,
+    config=None,
 ):
-    """Set up Weights & Biases for logging."""
+    """Set up Weights & Biases for logging.
+
+    Args:
+        run_id: If set, attach to this existing run instead of creating a new one
+            (used when resuming a checkpointed/requeued run so the metrics stay on
+            one continuous timeline instead of starting a fresh run each restart).
+        resume: wandb `resume` mode, e.g. 'allow'. Only meaningful together with `run_id`.
+        config: Config dict to log. Defaults to the current absl flag dict.
+    """
     wandb_output_dir = tempfile.mkdtemp()
     tags = [group] if group is not None else None
 
     init_kwargs = dict(
-        config=get_flag_dict(),
+        config=config if config is not None else get_flag_dict(),
         project=project,
         entity=entity,
         tags=tags,
         group=group,
         dir=wandb_output_dir,
         name=name,
+        id=run_id,
+        resume=resume,
         settings=wandb.Settings(
             start_method='thread',
             _disable_stats=False,
