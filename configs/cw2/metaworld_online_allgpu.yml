@@ -21,7 +21,7 @@ preemption_mode: requeue
 sbatch_args:
   requeue: ""
   signal: "B:USR1@300"
-  constraint: "GPUx4&A100"
+  constraint: "GPUx4"
 
 # cw2 only emits a `source activate ...` line when the SLURM section sets
 # `venv`, so the environment has to be set up here. Two things matter:
