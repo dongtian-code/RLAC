@@ -9,10 +9,13 @@ mem-per-cpu: 8000
 time: 5000
 
 preemption_mode: requeue
+# No `gres: "gpu:1"` here: Maxwell does not register GPUs as a generic
+# resource, so sbatch rejects it outright ("Invalid generic resource (gres)
+# specification"). The GPU partitions hand out whole nodes exclusively, so a
+# job gets the node's GPUs without asking for them.
 sbatch_args:
   requeue: ""
   signal: "B:USR1@300"
-  gres: "gpu:1"
 
 # The generated sbatch script activates nothing on its own: cw2 only emits a
 # `source activate ...` line when the SLURM section sets `venv`, and cw2's
