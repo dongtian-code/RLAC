@@ -102,6 +102,12 @@ def _checkpoint_config_fingerprint(cw_config):
         'iterations': cw_config.get('iterations'),
         'seed': cw_config.get('seed'),
         'params': cw_config.get('params'),
+        # The resume scope (explicit `resume_scope_name`/`sub_exp_name`, else the
+        # wandb group) is part of the identity of a checkpoint lineage. Without it
+        # a run relaunched under a new group would silently adopt the old group's
+        # checkpoints -- the scope only namespaces the `resume/` subtree, and the
+        # `log_*` scan in `_candidate_checkpoint_dirs` reaches the old runs anyway.
+        'resume_scope': _resume_scope_name(cw_config),
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(',', ':'), default=repr)
     return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
@@ -292,6 +298,12 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
                     candidates.append(os.path.join(resume_dir, scope, rep_dir_name, 'model'))
                 else:
                     candidates.append(os.path.join(resume_dir, rep_dir_name, 'model'))
+            # Timestamped run dirs are only searched for an unscoped lineage. They
+            # predate the `resume/` scheme and carry no scope of their own, so
+            # scanning them under a scope would pull in checkpoints from every
+            # other group that ever ran this grid point.
+            if scope is not None:
+                continue
             for run_dir in [os.path.join(root, 'log'), *glob.glob(os.path.join(root, 'log_*'))]:
                 for rep_dir_name in rep_dir_names:
                     candidates.append(os.path.join(run_dir, rep_dir_name, 'model'))
