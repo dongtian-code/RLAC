@@ -9,14 +9,19 @@ mem-per-cpu: 8000
 time: 5000
 
 preemption_mode: requeue
-# No `gres: "gpu:1"` here: Maxwell does not register GPUs as a generic
-# resource, so sbatch rejects it outright ("Invalid generic resource (gres)
-# specification"). The GPU partitions hand out whole nodes exclusively, so a
-# job gets the node's GPUs without asking for them.
+# GPU count is selected through node features, not `gres`: Maxwell does not
+# register GPUs as a generic resource, so `gres: "gpu:4"` is rejected outright
+# ("Invalid generic resource (gres) specification"). "GPUx4&A100" asks for a
+# node that has 4 GPUs and carries the A100 feature; `sinfo -o "%N %f"` lists
+# the feature names a partition actually offers.
+#
+# NOTE: the A100 nodes with 4 GPUs live in `allgpu` (A100-SXM4-40GB x4 and
+# A100-SXM4-80GB x4). `psgpu` only has A100 as a single-GPU node plus one
+# P100 x4, so GPUx4&A100 has no match there and the jobs would pend forever.
 sbatch_args:
   requeue: ""
   signal: "B:USR1@300"
-  constraint: "GPUx1&A100"
+  constraint: "GPUx4&A100"
 
 # cw2 only emits a `source activate ...` line when the SLURM section sets
 # `venv`, so the environment has to be set up here. Two things matter:
