@@ -106,6 +106,7 @@ params:
   save_all_online_states: false   # MetaWorld's env has no get_state(); leave this off
 
   agent:
+    actor_type: "best-of-n"
     agent_name: "acfql"
     lr: 0.0003
     batch_size: 256
@@ -119,9 +120,6 @@ params:
 # "best-of-n" samples actor_num_samples flow actions and keeps the argmax-Q one
 # (noticeably slower per env step and per eval).
 grid:
-  agent:
-    actor_type: ["distill-ddpg", "best-of-n"]
-
   env_name: [
     "metaworld/assembly-v2",
     "metaworld/basketball-v2",
