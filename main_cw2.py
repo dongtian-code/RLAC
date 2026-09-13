@@ -442,7 +442,7 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
             'python_random_state': random.getstate(),
             'numpy_random_state': np.random.get_state(),
             'online_rng': np.asarray(self.online_rng) if self.online_rng is not None else None,
-            'wandb_run_id': self.run.id if self.run is not None else None,
+            'wandb_run_id': self.wandb_run.id if self.wandb_run is not None else None,
             'config_fingerprint': _checkpoint_config_fingerprint(cw_config),
             'runtime': {
                 'saved_at_unix': time.time(),
@@ -514,7 +514,12 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
         self._active_run_lock_fd = None
         self._preemption_requested = False
         self._preemption_signal = None
-        self.run = None
+        # NOT `self.run`: RLACExperiment inherits cw2's
+        # AbstractIterativeExperiment, whose `run()` method is the driver that
+        # calls `iterate()` -- binding a wandb Run to `self.run` shadows it on the
+        # instance and cw2's `self.exp.run(c, r, logger)` then fails with
+        # "TypeError: 'Run' object is not callable".
+        self.wandb_run = None
 
         p = cw_config['params']
         random.seed(cw_config['seed'])
@@ -671,7 +676,7 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
         if os.environ.get('SLURM_JOB_ID'):
             exp_name += f"s_{os.environ['SLURM_JOB_ID']}"
         wandb_cfg = cw_config.get('wandb', {}) if isinstance(cw_config.get('wandb'), dict) else {}
-        self.run = setup_wandb(
+        self.wandb_run = setup_wandb(
             project=wandb_cfg.get('project', 'qc'),
             group=wandb_cfg.get('group', cw_config.get('_experiment_name')),
             entity=wandb_cfg.get('entity'),
@@ -835,9 +840,9 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
             if len(d['button_states']) != 0:
                 c_data['button_states'] = np.stack(d['button_states'], axis=0)
             np.savez(os.path.join(cw_config['_rep_log_path'], 'data.npz'), **c_data)
-        if self.run is not None and self.run.url:
+        if self.wandb_run is not None and self.wandb_run.url:
             with open(os.path.join(cw_config['_rep_log_path'], 'token.tk'), 'w') as f:
-                f.write(self.run.url)
+                f.write(self.wandb_run.url)
 
     def iterate(self, cw_config: dict, rep: int, n: int) -> dict:
         p = cw_config['params']
