@@ -12,6 +12,7 @@ preemption_mode: requeue
 sbatch_args:
   requeue: ""
   signal: "B:USR1@300"
+  gres: "gpu:1"
 
 experiment_copy_src: "../"
 experiment_copy_auto_dst: "/gpfs/petra3/scratch/dongtian/CODE_COPY/"
