@@ -14,6 +14,20 @@ sbatch_args:
   signal: "B:USR1@300"
   gres: "gpu:1"
 
+# The generated sbatch script activates nothing on its own: cw2 only emits a
+# `source activate ...` line when the SLURM section sets `venv`, and cw2's
+# gpu_env_selector.sh otherwise falls back to a bare `python3` unless
+# CONDA_PREFIX happens to be inherited from the submitting shell -- which it is
+# not on Maxwell, hence the "No module named 'jax'" crashes. Activating by
+# absolute path here is what makes the compute node use rlac_env. These lines
+# run before gpu_env_selector.sh, so it picks up CONDA_PREFIX and points
+# MPRL_PYTHON_BIN at this env's python.
+sh_lines:
+  - "unset LD_PRELOAD"   # drop the login node's VirtualGL libvglfaker/libdlfaker preloads
+  - "source /gpfs/petra3/scratch/dongtian/miniconda3/etc/profile.d/conda.sh"
+  - "conda activate rlac_env"
+  - "export MUJOCO_GL=egl"
+
 experiment_copy_src: "../"
 experiment_copy_auto_dst: "/gpfs/petra3/scratch/dongtian/CODE_COPY/"
 
