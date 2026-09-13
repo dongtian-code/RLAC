@@ -874,7 +874,12 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
                     self.phase = 'done'
                     self._finish_run(cw_config)
 
-        self.n_completed = n + 1
+        # `n` is cw2's per-process loop index: AbstractIterativeExperiment.run()
+        # always iterates `range(cw_config["iterations"])` from 0, so after a
+        # requeue it restarts at 0. Assigning `n + 1` here would throw away the
+        # value restored from the checkpoint (and make checkpoint_state_<n> names
+        # go backwards); count cumulatively instead.
+        self.n_completed += 1
         self.progress_bar.update(1)
 
         if self._preemption_requested:
