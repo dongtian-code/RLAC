@@ -16,20 +16,26 @@ preemption_mode: requeue
 sbatch_args:
   requeue: ""
   signal: "B:USR1@300"
-  constraint: "GPUx1"
+  constraint: "GPUx1&A100"
 
-# The generated sbatch script activates nothing on its own: cw2 only emits a
-# `source activate ...` line when the SLURM section sets `venv`, and cw2's
-# gpu_env_selector.sh otherwise falls back to a bare `python3` unless
-# CONDA_PREFIX happens to be inherited from the submitting shell -- which it is
-# not on Maxwell, hence the "No module named 'jax'" crashes. Activating by
-# absolute path here is what makes the compute node use rlac_env. These lines
-# run before gpu_env_selector.sh, so it picks up CONDA_PREFIX and points
-# MPRL_PYTHON_BIN at this env's python.
+# cw2 only emits a `source activate ...` line when the SLURM section sets
+# `venv`, so the environment has to be set up here. Two things matter:
+#
+#   * MPRL_GPU_ENV_AUTO_SELECT=0 -- cw2's gpu_env_selector.sh runs AFTER these
+#     lines and, when that variable is 1 (it is exported from the login shell
+#     for another project), ignores CONDA_PREFIX entirely and probes its own
+#     candidate list, which defaults to policy_chunking_transformer_*. Those
+#     are torch envs with no jax, which is what caused the
+#     "No module named 'jax'" crashes. With it set to 0 the selector takes its
+#     `elif [ -n "$CONDA_PREFIX" ]` branch and points MPRL_PYTHON_BIN at the
+#     env activated just below.
+#   * the conda activate itself, by absolute path, because conda is not
+#     necessarily on PATH in the job.
 sh_lines:
-  - "unset LD_PRELOAD"   # drop the login node's VirtualGL libvglfaker/libdlfaker preloads
-  - "source /gpfs/petra3/scratch/dongtian/miniconda3/etc/profile.d/conda.sh"
-  - "conda activate rlac_env"
+  - "unset LD_PRELOAD"
+  - "export MPRL_GPU_ENV_AUTO_SELECT=0"
+  - "export CONDA_PREFIX=/gpfs/petra3/scratch/dongtian/miniconda3/envs/rlac_env"
+  - 'export PATH="$CONDA_PREFIX/bin:$PATH"'
   - "export MUJOCO_GL=egl"
 
 experiment_copy_src: "../"
