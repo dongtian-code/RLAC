@@ -57,7 +57,11 @@ iterations: &iterations 1000
 num_checkpoints: 100         # a resume checkpoint every iterations/num_checkpoints = 10 chunks
 overwrite_checkpoints: true
 
-path: "/gpfs/petra3/scratch/dongtian/mprl_exp_result"
+# Keep this separate from the other project's mprl_exp_result: cw2 derives
+# `slurm_log` (<path>/slurmlog) and `slurm_output` (<path>/sbatch.sh) from `path`
+# (cw_slurm.py:_complete_optionals), so two projects sharing a `path` overwrite
+# each other's sbatch.sh on submit and interleave their slurm logs.
+path: "/gpfs/petra3/scratch/dongtian/rlac_exp_result"
 
 auto_resume_from_latest_checkpoint: true
 resume_dir_name: "resume"
