@@ -6,7 +6,7 @@ num_parallel_jobs: 50
 ntasks: 1
 cpus-per-task: 8
 mem-per-cpu: 8000
-time: 720
+time: 5000
 
 preemption_mode: requeue
 sbatch_args:
@@ -27,9 +27,9 @@ reps_in_parallel: 1
 
 # MetaWorld has no offline dataset, so offline_steps must be 0 (pure online) --
 # see envs/metaworld_utils.py and RLACExperiment.initialize()'s no-dataset branch.
-# iterations = ceil(online_steps / chunk_size) = 1_000_000 / 5_000 = 200.
-iterations: &iterations 200
-num_checkpoints: 20
+# iterations = ceil(online_steps / chunk_size) = 5_000_000 / 5_000 = 1000.
+iterations: &iterations 1000
+num_checkpoints: 100         # a resume checkpoint every iterations/num_checkpoints = 10 chunks
 overwrite_checkpoints: true
 
 path: "/gpfs/petra3/scratch/dongtian/mprl_exp_result"
@@ -52,8 +52,8 @@ params:
   env_name: "metaworld/reach-v2"
 
   offline_steps: 0            # must stay 0 -- there is no offline data for MetaWorld
-  online_steps: 1000000
-  buffer_size: 1000000        # empty buffer at start, no offline data to seed it from
+  online_steps: 5000000
+  buffer_size: 5000000        # empty buffer at start, no offline data to seed it from
   chunk_size: &chunk_size 5000
   log_interval: *chunk_size
   eval_interval: 20000
@@ -80,10 +80,19 @@ params:
     agent_name: "acfql"
     lr: 0.0003
     batch_size: 256
+    actor_num_samples: 32     # only read when actor_type == "best-of-n"
 
-# All 50 MetaWorld ML1/MT50 tasks. With repetitions=1 this unfolds into exactly
-# 50 jobs, one seed each.
+# cw2 takes the cartesian product over all grid entries (itertools.product in
+# cw_config/conf_unfolder.py:params_combine), so this is
+# len(env_name) x len(agent.actor_type) jobs, with the grid values appended to
+# each run's name. The two actor types are the two branches of
+# acfql.py:sample_actions -- "distill-ddpg" uses the one-step distilled actor,
+# "best-of-n" samples actor_num_samples flow actions and keeps the argmax-Q one
+# (noticeably slower per env step and per eval).
 grid:
+  agent:
+    actor_type: ["distill-ddpg", "best-of-n"]
+
   env_name: [
     "metaworld/assembly-v2",
     "metaworld/basketball-v2",
