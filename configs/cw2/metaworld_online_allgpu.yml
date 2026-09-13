@@ -1,6 +1,6 @@
 ---
 name: "SLURM"
-partition: "allgpu"
+partition: "psgpu"
 job-name: "RLAC-metaworld"
 num_parallel_jobs: 50
 ntasks: 1
@@ -14,7 +14,7 @@ sbatch_args:
   signal: "B:USR1@300"
 
 experiment_copy_src: "../"
-experiment_copy_auto_dst: "/path/to/scratch/CODE_COPY/"
+experiment_copy_auto_dst: "/gpfs/petra3/scratch/dongtian/CODE_COPY/"
 
 ---
 name: "RLAC-metaworld"
@@ -32,13 +32,13 @@ iterations: &iterations 200
 num_checkpoints: 20
 overwrite_checkpoints: true
 
-path: "/path/to/scratch/rlac_exp_result"
+path: "/gpfs/petra3/scratch/dongtian/mprl_exp_result"
 
 auto_resume_from_latest_checkpoint: true
 resume_dir_name: "resume"
 
 wandb:
-  project: "qc"
+  project: "[rlac online]metaworld"
   group: "cw2_metaworld_online"
   entity: null
 
@@ -95,44 +95,44 @@ grid:
     "metaworld/button-press-wall-v2",
     "metaworld/coffee-button-v2",
     "metaworld/coffee-pull-v2",
-    "metaworld/coffee-push-v2",
-    "metaworld/dial-turn-v2",
-    "metaworld/disassemble-v2",
-    "metaworld/door-close-v2",
-    "metaworld/door-lock-v2",
-    "metaworld/door-open-v2",
-    "metaworld/door-unlock-v2",
-    "metaworld/drawer-close-v2",
-    "metaworld/drawer-open-v2",
-    "metaworld/faucet-open-v2",
-    "metaworld/faucet-close-v2",
-    "metaworld/hammer-v2",
-    "metaworld/hand-insert-v2",
-    "metaworld/handle-press-side-v2",
-    "metaworld/handle-press-v2",
-    "metaworld/handle-pull-side-v2",
-    "metaworld/handle-pull-v2",
-    "metaworld/lever-pull-v2",
-    "metaworld/peg-insert-side-v2",
-    "metaworld/pick-place-wall-v2",
-    "metaworld/pick-out-of-hole-v2",
-    "metaworld/reach-v2",
-    "metaworld/push-back-v2",
-    "metaworld/push-v2",
-    "metaworld/pick-place-v2",
-    "metaworld/plate-slide-v2",
-    "metaworld/plate-slide-side-v2",
-    "metaworld/plate-slide-back-v2",
-    "metaworld/plate-slide-back-side-v2",
-    "metaworld/peg-unplug-side-v2",
-    "metaworld/push-wall-v2",
-    "metaworld/soccer-v2",
-    "metaworld/stick-push-v2",
-    "metaworld/stick-pull-v2",
-    "metaworld/reach-wall-v2",
-    "metaworld/shelf-place-v2",
-    "metaworld/sweep-into-v2",
-    "metaworld/sweep-v2",
-    "metaworld/window-open-v2",
-    "metaworld/window-close-v2",
+#    "metaworld/coffee-push-v2",
+#    "metaworld/dial-turn-v2",
+#    "metaworld/disassemble-v2",
+#    "metaworld/door-close-v2",
+#    "metaworld/door-lock-v2",
+#    "metaworld/door-open-v2",
+#    "metaworld/door-unlock-v2",
+#    "metaworld/drawer-close-v2",
+#    "metaworld/drawer-open-v2",
+#    "metaworld/faucet-open-v2",
+#    "metaworld/faucet-close-v2",
+#    "metaworld/hammer-v2",
+#    "metaworld/hand-insert-v2",
+#    "metaworld/handle-press-side-v2",
+#    "metaworld/handle-press-v2",
+#    "metaworld/handle-pull-side-v2",
+#    "metaworld/handle-pull-v2",
+#    "metaworld/lever-pull-v2",
+#    "metaworld/peg-insert-side-v2",
+#    "metaworld/pick-place-wall-v2",
+#    "metaworld/pick-out-of-hole-v2",
+#    "metaworld/reach-v2",
+#    "metaworld/push-back-v2",
+#    "metaworld/push-v2",
+#    "metaworld/pick-place-v2",
+#    "metaworld/plate-slide-v2",
+#    "metaworld/plate-slide-side-v2",
+#    "metaworld/plate-slide-back-v2",
+#    "metaworld/plate-slide-back-side-v2",
+#    "metaworld/peg-unplug-side-v2",
+#    "metaworld/push-wall-v2",
+#    "metaworld/soccer-v2",
+#    "metaworld/stick-push-v2",
+#    "metaworld/stick-pull-v2",
+#    "metaworld/reach-wall-v2",
+#    "metaworld/shelf-place-v2",
+#    "metaworld/sweep-into-v2",
+#    "metaworld/sweep-v2",
+#    "metaworld/window-open-v2",
+#    "metaworld/window-close-v2",
   ]
