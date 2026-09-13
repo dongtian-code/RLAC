@@ -68,7 +68,7 @@ resume_dir_name: "resume"
 
 wandb:
   project: "[rlac online]metaworld"
-  group: "[rlac developing] smoke test"
+  group: "[rlac developing] smoke test, all 1 seed test"
   entity: null
 
 params:
