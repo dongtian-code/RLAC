@@ -16,6 +16,7 @@ preemption_mode: requeue
 sbatch_args:
   requeue: ""
   signal: "B:USR1@300"
+  constraint: "GPUx1"
 
 # The generated sbatch script activates nothing on its own: cw2 only emits a
 # `source activate ...` line when the SLURM section sets `venv`, and cw2's
