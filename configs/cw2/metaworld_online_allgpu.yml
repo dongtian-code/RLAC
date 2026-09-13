@@ -72,12 +72,12 @@ wandb:
   entity: null
 
 params:
-  # MetaWorld task ids follow "metaworld/<task>-v2" (registered by `fancy_gym`
-  # on import -- see envs/metaworld_utils.py). Requires, in this order:
+  # Task ids stay in this repo's "metaworld/<task>-v2" spelling;
+  # envs/metaworld_utils.py normalises them to MetaWorld 3.x's "<task>-v3" and
+  # makes them via the "Meta-World/goal_observable" gymnasium id. The only
+  # install needed is:
   #   pip install "git+https://github.com/dongtian-code/Metaworld.git@dt_branch"
-  #   pip install "git+https://github.com/DongTian95/fancy_gymnasium.git@dt_branch"
-  # (or point pip at your local checkouts, e.g. /home/dong/Metaworld and
-  # /home/dong/fancy_gymnasium, with `pip install -e`).
+  # (fancy_gym is no longer used -- it is stuck on gymnasium 0.29 / mujoco 2.3.3).
   env_name: "metaworld/reach-v2"
 
   offline_steps: 0            # must stay 0 -- there is no offline data for MetaWorld

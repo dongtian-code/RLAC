@@ -192,12 +192,14 @@ install_external_repos() {
     clone_or_update_repo "cw2" "git@github.com:DongTian95/cw2.git" "dt_branch"
 
     if [[ "$RLAC_WITH_METAWORLD" == "1" ]]; then
-        # MetaWorld env ids ("metaworld/<task>-v2") are registered by
-        # fancy_gym as a side effect of importing it -- see
-        # envs/metaworld_utils.py. Install Metaworld before fancy_gymnasium.
+        # MetaWorld 3.x registers its own gymnasium ids on import, so this is
+        # the only MetaWorld dependency -- envs/metaworld_utils.py goes through
+        # "Meta-World/goal_observable" directly. Do NOT add fancy_gymnasium back:
+        # it targets gymnasium 0.29 (subclasses the EnvCompatibility wrapper
+        # gymnasium 1.0 removed) and pins mujoco==2.3.3, which downgrades mujoco
+        # out from under metaworld, dm_control and ogbench.
         clone_or_update_repo "Metaworld" "git@github.com:dongtian-code/Metaworld.git" "dt_branch"
-        clone_or_update_repo "fancy_gymnasium" "https://github.com/DongTian95/fancy_gymnasium.git" "dt_branch"
-        warn "MetaWorld has historically required numpy<2, but requirements.txt pins numpy==2.2.5 for the rest of the stack. If 'import metaworld' or a MetaWorld env fails at runtime, that version tension is the first thing to check."
+        warn "MetaWorld pulls numpy back below 2 and pins mujoco==3.3.0, while requirements.txt asks for numpy==2.2.5 / mujoco==3.3.1. jax, dm_control and ogbench all work with numpy 1.26.4 + mujoco 3.3.0, but check those versions first if anything fails at import."
     fi
 
     if [[ "$RLAC_WITH_D4RL" == "1" ]]; then
@@ -248,7 +250,6 @@ verify_install() {
         verify_module cw2
         if [[ "$RLAC_WITH_METAWORLD" == "1" ]]; then
             verify_module metaworld
-            verify_module fancy_gym
         fi
         if [[ "$RLAC_WITH_D4RL" == "1" ]]; then
             verify_module d4rl
@@ -317,7 +318,7 @@ Useful options:
   PYTHON_VERSION=3.10 bash conda_env.sh          # choose a different Python version
   RLAC_CUDA=1 bash conda_env.sh                  # force CUDA 12 JAX
   RLAC_CUDA=0 bash conda_env.sh                  # force CPU-only JAX
-  RLAC_WITH_METAWORLD=1 bash conda_env.sh        # also install MetaWorld + fancy_gym
+  RLAC_WITH_METAWORLD=1 bash conda_env.sh        # also install MetaWorld
   RLAC_WITH_D4RL=1 bash conda_env.sh             # also install D4RL (AntMaze/Adroit)
   RLAC_SKIP_EXTERNAL_DEPS=1 bash conda_env.sh    # skip cw2/MetaWorld/D4RL git installs
   RLAC_DEPS_DIR=/path/to/deps bash conda_env.sh  # where external repos get cloned
