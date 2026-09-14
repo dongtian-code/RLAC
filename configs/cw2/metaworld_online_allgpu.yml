@@ -85,6 +85,20 @@ sh_lines:
   - "export MPRL_GPU_ENV_AUTO_SELECT=0"
   - "export CONDA_PREFIX=/gpfs/petra3/scratch/dongtian/miniconda3/envs/rlac_env"
   - 'export PATH="$CONDA_PREFIX/bin:$PATH"'
+  # XLA looks for an external `ptxas` on PATH and otherwise takes the node's
+  # /usr/local/cuda/bin/ptxas, whose version differs from node to node on Maxwell.
+  # Where it is older than what jaxlib 0.6 emits, XLA reports
+  #     UNIMPLEMENTED: /usr/local/cuda/bin/ptxas ptxas too old
+  # -- which RLAC survives (it surfaces in the redzone-allocator autotuning path,
+  # which tolerates failure and falls back to the driver JIT) but SimbaV2 does not:
+  # it hits the same condition while compiling the agent's networks, where it is
+  # raised as XlaRuntimeError and kills the rep seconds after launch. Observed on
+  # max-exflg007..024 and max-p3ag005..008 while max-exflg029/030 were fine, i.e.
+  # it tracks the node's CUDA install, NOT the GPU model -- auto_gpu_models cannot
+  # fix it. Prefer the ptxas that ships in this env's own nvidia-cuda-nvcc-cu12
+  # wheel, which matches jaxlib by construction. Never fails the job: if the wheel
+  # is missing it says so and leaves PATH alone.
+  - 'PTXAS_BIN="$(ls -d "$CONDA_PREFIX"/lib/python*/site-packages/nvidia/cuda_nvcc/bin 2>/dev/null | head -1)"; if [ -x "$PTXAS_BIN/ptxas" ]; then export PATH="$PTXAS_BIN:$PATH"; echo "[slurm] ptxas: $PTXAS_BIN"; else echo "[slurm] WARNING: no nvidia-cuda-nvcc-cu12 ptxas in $CONDA_PREFIX; XLA will use the node CUDA and may fail with \"ptxas too old\""; fi'
   - "export MUJOCO_GL=egl"
   # cpus_per_rep is 16, and up to 4 reps share a node. Without this each JAX
   # process sizes its thread pool from the node's full core count and they
@@ -104,7 +118,7 @@ name: "RLAC-metaworld-allgpu"
 # evaluation reads `success` from the episode's final step. Checkpoints written
 # before that change hold a replay buffer collected on the frozen task -- resuming
 # one would silently mix the two. A new scope name makes those unreachable.
-resume_scope_name: "metaworld_randomized_init_14.Sep.2026"
+resume_scope_name: "metaworld_randinit_lastframe_14.Sep.2026b"
 
 # 50 tasks x 1 seed = 50 runs. reps_per_job / reps_in_parallel are placeholders:
 # with num_gpus=auto, cw2 overwrites BOTH per array task from the node size it
@@ -147,12 +161,15 @@ path: "/gpfs/petra3/scratch/dongtian/rlac_exp_result"
 auto_resume_from_latest_checkpoint: true
 resume_dir_name: "resume"
 
-# NOTE: `group` feeds the checkpoint resume lineage alongside resume_scope_name
-# (main_cw2.py _resume_scope_name -> _checkpoint_config_fingerprint), so renaming
-# it after a run starts abandons that run's checkpoints.
+# NOTE: `group` does NOT control the checkpoint lineage while `resume_scope_name`
+# above is set. main_cw2.py::_resume_scope_name reads resume_scope_name first and
+# only falls back to this group when that key is absent, so renaming the group
+# alone would start a new W&B group that RESUMES the old group's checkpoints.
+# To really start over, change resume_scope_name too -- both were bumped together
+# for this launch.
 wandb:
   project: "[rlac online]metaworld"
-  group: "[rlac] metaworld 50 tasks 5M, randomized init, 140926"
+  group: "[rlac] metaworld 50 tasks 5M, randinit+lastframe, 140926b"
   entity: null
 
 params:

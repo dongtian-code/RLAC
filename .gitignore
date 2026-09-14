@@ -8,3 +8,13 @@ dist/
 .idea/
 .ruff_cache/
 exp/
+
+# cw2 runtime configs. With `num_gpus: auto` cw2 calls _persist_runtime_config
+# (cw_slurm.py), which writes a fully-resolved snapshot of the config next to the
+# original on every submit: "relative_<config>.yml" plus a per-experiment-name
+# directory holding "relative_<config>_<exp name>.yml". That snapshot -- not the
+# hand-written YAML -- is what the submitted job actually reads, so it pins the
+# GPU-node assignment made at submit time. Regenerated every submit, never edited
+# by hand. Ignoring the files also keeps the generated directory untracked, since
+# it contains nothing else.
+relative_*.yml
