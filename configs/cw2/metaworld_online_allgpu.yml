@@ -1,63 +1,111 @@
 ---
 name: "SLURM"
-partition: "psgpu"
-job-name: "RLAC-metaworld"
-num_parallel_jobs: 50
+partition: "allgpu"          # allgpu (requeue) | comgpu/compgpu (cancel) | psgpu
+job-name: "RLAC-metaworld-allgpu"
+num_parallel_jobs: 30        # array throttle (%N). ~22 array tasks are produced
+                             # below, so this is effectively "no throttle"; the
+                             # real limit is allgpu's own queued-job cap.
 ntasks: 1
-cpus-per-task: 8
-mem-per-cpu: 8000
-time: 5000
+cpus-per-task: 64            # only a fallback: num_gpus=auto OVERWRITES this per
+                             # array task with gpu_count * reps_per_gpu * cpus_per_rep.
+cpus_per_rep: 16
+mem-per-cpu: 1000            # per-CPU, so memory scales with the group's node size:
+                             # GPUx1 -> 16 cpus -> 16 GB, GPUx4 -> 64 cpus -> 64 GB.
+                             # A flat `mem:` would hand a 1-GPU node running 1 rep
+                             # the same budget as a 4-GPU node running 4. cw2 rejects
+                             # setting both mem and mem-per-cpu.
+                             # RLAC keeps its full 5M history (buffer_size below):
+                             # ~2 GB of replay per rep, and a checkpoint transiently
+                             # doubles that, so 16 GB/rep has ~2x headroom. Raise this
+                             # if a rep is ever OOM-killed; do not raise it "just in
+                             # case", an over-large request only delays scheduling.
+time: 4320                   # minutes (72 h). Generous on purpose -- preemption is
+                             # handled by requeue, so a long wall limit costs nothing.
 
+# allgpu REQUEUES a preempted job: Slurm brings the same array task back by
+# itself. So unlike the comgpu config there is no self-resubmission, no
+# checkpoint-ready barrier and no .disable_preemption_resubmit escape hatch --
+# on SIGUSR1 every rep just checkpoints and quiesces, and the requeued job picks
+# the checkpoints back up.
 preemption_mode: requeue
-# No `gres: "gpu:1"` here: Maxwell does not register GPUs as a generic
-# resource, so sbatch rejects it outright ("Invalid generic resource (gres)
-# specification"). The GPU partitions hand out whole nodes exclusively, so a
-# job gets the node's GPUs without asking for them.
-sbatch_args:
-  requeue: ""
-  signal: "B:USR1@300"
-  constraint: "GPUx1&A100"
+auto_resume_from_latest_checkpoint: true
+resume_dir_name: "resume"
+# No `exclude_current_node_on_resubmit` here even though the dt_rl template
+# carries one: it is only consulted on the cancel-mode self-resubmission path
+# (main_cw2.py::_replacement_exclude_nodes). Under requeue, Slurm chooses the
+# node, so the key would be silently inert.
 
-# cw2 only emits a `source activate ...` line when the SLURM section sets
-# `venv`, so the environment has to be set up here. Two things matter:
+# Let cw2 size each array task to whatever GPU nodes are actually idle at submit
+# time, instead of pinning one node shape. It queries idle nodes per GPU count,
+# packs runs into the largest nodes first (4 -> 2 -> 1), and balances whatever is
+# left over across node sizes.
 #
-#   * MPRL_GPU_ENV_AUTO_SELECT=0 -- cw2's gpu_env_selector.sh runs AFTER these
-#     lines and, when that variable is 1 (it is exported from the login shell
-#     for another project), ignores CONDA_PREFIX entirely and probes its own
-#     candidate list, which defaults to policy_chunking_transformer_*. Those
-#     are torch envs with no jax, which is what caused the
-#     "No module named 'jax'" crashes. With it set to 0 the selector takes its
-#     `elif [ -n "$CONDA_PREFIX" ]` branch and points MPRL_PYTHON_BIN at the
-#     env activated just below.
-#   * the conda activate itself, by absolute path, because conda is not
-#     necessarily on PATH in the job.
+# Two things this forbids, both enforced by cw2:
+#   * `gres`/`gpus`/`gpus-per-node`/`gpus-per-task` in sbatch_args (ConfigKeyError);
+#   * a hand-written `constraint` -- auto OVERWRITES sbatch_args["constraint"]
+#     with "GPUx{n}" per group. To restrict the GPU model, use `auto_gpu_models`
+#     (e.g. ["A100"]), which becomes "GPUx{n}&(A100)". Left unset here so every
+#     idle node qualifies; the old psgpu config's "GPUx1&A100" would now shrink
+#     the pool for no benefit.
+num_gpus: auto
+auto_gpu_node_counts: [1, 2, 4]
+auto_gpu_fallback_count: 4          # must appear in auto_gpu_node_counts
+auto_gpu_subtract_pending_priority: true   # reserve matching pending Priority jobs
+                                           # before claiming idle nodes
+reps_per_gpu: 1                     # one run per GPU -- never two on a device
+scheduler: horeka
+
+sbatch_args:
+  requeue: ""                # lets Slurm recover failures before Python starts (node loss)
+  signal: "B:USR1@300"       # 300 s of grace; main_cw2.py checkpoints on USR1
+
 sh_lines:
-  - "unset LD_PRELOAD"
+  - "unset LD_PRELOAD"       # drop the login node's VirtualGL libvglfaker/libdlfaker preloads
+  # MPRL_GPU_ENV_AUTO_SELECT MUST stay 0 here. The dt_rl config sets it to 1 with
+  # MPRL_GPU_ENV_CANDIDATES=policy_chunking_transformer_* -- those are that
+  # project's torch environments. cw2's gpu_env_selector.sh runs AFTER these
+  # lines, and with AUTO_SELECT=1 it ignores CONDA_PREFIX and probes that
+  # candidate list, which is what produced "No module named 'jax'". With 0 it
+  # takes its `elif [ -n "$CONDA_PREFIX" ]` branch and uses the env below.
   - "export MPRL_GPU_ENV_AUTO_SELECT=0"
   - "export CONDA_PREFIX=/gpfs/petra3/scratch/dongtian/miniconda3/envs/rlac_env"
   - 'export PATH="$CONDA_PREFIX/bin:$PATH"'
   - "export MUJOCO_GL=egl"
+  # cpus_per_rep is 16, and up to 4 reps share a node. Without this each JAX
+  # process sizes its thread pool from the node's full core count and they
+  # oversubscribe each other.
+  - "export OMP_NUM_THREADS=8"
 
 experiment_copy_src: "../"
-experiment_copy_auto_dst: "/gpfs/petra3/scratch/dongtian/CODE_COPY/"
+experiment_copy_auto_dst: "/gpfs/petra3/scratch/dongtian/CODE_COPY_RLAC/"
 
 ---
-name: "RLAC-metaworld"
+name: "RLAC-metaworld-allgpu"
 
-# Single seed per task, all 50 ML1 tasks (see the `grid.env_name` list below) --
-# repetitions=1 means each grid point (task) gets exactly one seed.
+# Fresh resume lineage. MetaWorld's goal-observable env used to be created frozen
+# (metaworld/env_dict.py sets _freeze_rand_vec=True after one throwaway reset), so
+# every reset replayed a single object pose + goal; envs/metaworld_utils.py now
+# calls _unfreeze_task() to restore the per-reset task distribution, and
+# evaluation reads `success` from the episode's final step. Checkpoints written
+# before that change hold a replay buffer collected on the frozen task -- resuming
+# one would silently mix the two. A new scope name makes those unreachable.
+resume_scope_name: "metaworld_randomized_init_14.Sep.2026"
+
+# 50 tasks x 1 seed = 50 runs. reps_per_job / reps_in_parallel are placeholders:
+# with num_gpus=auto, cw2 overwrites BOTH per array task from the node size it
+# assigned (cw2/job.py sets REPS_P_JOB and REPS_PARALL from auto_gpu_job_capacities),
+# so a GPUx1 task runs 1 rep and a GPUx4 task runs 4.
 repetitions: 1
-reps_per_job: 1
-reps_in_parallel: 1
+reps_per_job: 4
+reps_in_parallel: 4
 
-# MetaWorld has no offline dataset, so offline_steps must be 0 (pure online) --
-# see envs/metaworld_utils.py and RLACExperiment.initialize()'s no-dataset branch.
+# MetaWorld has no offline dataset, so offline_steps must be 0 (pure online).
 # iterations = ceil(online_steps / chunk_size) = 5_000_000 / 5_000 = 1000.
 iterations: &iterations 1000
 num_checkpoints: 100         # a resume checkpoint every iterations/num_checkpoints = 10 chunks
 overwrite_checkpoints: true
 
-# Keep this separate from the other project's mprl_exp_result: cw2 derives
+# Keep this separate from the other projects' result roots: cw2 derives
 # `slurm_log` (<path>/slurmlog) and `slurm_output` (<path>/sbatch.sh) from `path`
 # (cw_slurm.py:_complete_optionals), so two projects sharing a `path` overwrite
 # each other's sbatch.sh on submit and interleave their slurm logs.
@@ -66,29 +114,35 @@ path: "/gpfs/petra3/scratch/dongtian/rlac_exp_result"
 auto_resume_from_latest_checkpoint: true
 resume_dir_name: "resume"
 
+# NOTE: `group` feeds the checkpoint resume lineage alongside resume_scope_name
+# (main_cw2.py _resume_scope_name -> _checkpoint_config_fingerprint), so renaming
+# it after a run starts abandons that run's checkpoints.
 wandb:
   project: "[rlac online]metaworld"
-  group: "[rlac developing] smoke test, all 1 seed test"
+  group: "[rlac] metaworld 50 tasks 5M, randomized init, 140926"
   entity: null
 
 params:
   # Task ids stay in this repo's "metaworld/<task>-v2" spelling;
   # envs/metaworld_utils.py normalises them to MetaWorld 3.x's "<task>-v3" and
-  # makes them via the "Meta-World/goal_observable" gymnasium id. The only
-  # install needed is:
+  # makes them via the "Meta-World/goal_observable" gymnasium id, then unfreezes
+  # the task so object and goal are redrawn every reset. The only install needed is:
   #   pip install "git+https://github.com/dongtian-code/Metaworld.git@dt_branch"
   # (fancy_gym is no longer used -- it is stuck on gymnasium 0.29 / mujoco 2.3.3).
   env_name: "metaworld/reach-v2"
 
   offline_steps: 0            # must stay 0 -- there is no offline data for MetaWorld
   online_steps: 5000000
-  buffer_size: 5000000        # empty buffer at start, no offline data to seed it from
+  buffer_size: 5000000        # full history; ~2 GB per rep, sized for by mem-per-cpu above
   chunk_size: &chunk_size 5000
   log_interval: *chunk_size
   eval_interval: 20000
   save_interval: -1
   start_training: 5000        # random actions until the buffer has this many transitions
 
+  # SimbaV2 runs at updates_per_interaction_step: 2 (its own default). The two
+  # methods are matched on ENVIRONMENT SAMPLES (5M steps each), not on gradient
+  # steps -- state the UTD alongside any comparison.
   utd_ratio: 1
   discount: 0.99
 
@@ -112,13 +166,6 @@ params:
     batch_size: 256
     actor_num_samples: 32     # only read when actor_type == "best-of-n"
 
-# cw2 takes the cartesian product over all grid entries (itertools.product in
-# cw_config/conf_unfolder.py:params_combine), so this is
-# len(env_name) x len(agent.actor_type) jobs, with the grid values appended to
-# each run's name. The two actor types are the two branches of
-# acfql.py:sample_actions -- "distill-ddpg" uses the one-step distilled actor,
-# "best-of-n" samples actor_num_samples flow actions and keeps the argmax-Q one
-# (noticeably slower per env step and per eval).
 grid:
   env_name: [
     "metaworld/assembly-v2",

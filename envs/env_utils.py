@@ -4,10 +4,15 @@ import time
 
 import gymnasium
 import numpy as np
-import ogbench
 from gymnasium.spaces import Box
 
-from utils.datasets import Dataset
+# `ogbench` and `utils.datasets` (which pulls in jax + flax) are imported inside
+# the OGBench branch of `make_env_and_datasets` rather than here -- they are the
+# only things in this module that need them, and importing them at module scope
+# made `import envs.env_utils` require OGBench even for an env family that has
+# nothing to do with it. A MetaWorld-only environment has no ogbench installed
+# and used to fail at import time, before it ever reached `make_env_and_datasets`.
+# Every other branch below already imports its dependencies this way.
 
 
 class EpisodeMonitor(gymnasium.Wrapper):
@@ -102,6 +107,10 @@ def make_env_and_datasets(env_name, frame_stack=None, action_clip_eps=1e-5):
 
     if 'singletask' in env_name:
         # OGBench.
+        import ogbench
+
+        from utils.datasets import Dataset
+
         env, train_dataset, val_dataset = ogbench.make_env_and_datasets(env_name)
         eval_env = ogbench.make_env_and_datasets(env_name, env_only=True)
         env = EpisodeMonitor(env, filter_regexes=['.*privileged.*', '.*proprio.*'])
