@@ -124,25 +124,28 @@ resume_scope_name: "metaworld_randinit_lastframe_14.Sep.2026b"
 # with num_gpus=auto, cw2 overwrites BOTH per array task from the node size it
 # assigned (cw2/job.py sets REPS_P_JOB and REPS_PARALL from auto_gpu_job_capacities),
 # so a GPUx1 task runs 1 rep and a GPUx4 task runs 4.
-# First seed of this launch. cw2 unfolds repetitions as _rep_idx 0..repetitions-1
-# and main_cw2.py's prepare_rep_configs turns that into `seed = seed + _rep_idx`,
-# then renames each run's directory from cw2's rep_<_rep_idx> to rep_<seed>. The
-# on-disk identity of a run is therefore its SEED, not its repetition index --
-# which is what makes seeds supplementable later.
+# Seeds 0-4. cw2 unfolds repetitions as _rep_idx 0..repetitions-1 and
+# main_cw2.py's prepare_rep_configs turns that into `seed = seed + _rep_idx`, then
+# renames each run's directory from cw2's rep_<_rep_idx> to rep_<seed>. A run's
+# on-disk identity is its SEED, not its repetition index.
 #
-# To add seeds 1-3 afterwards: copy this file, leave wandb.group,
-# resume_scope_name and params untouched, and set
-#     seed: 1
-#     repetitions: 3
-# That produces seeds 1,2,3 in rep_01/rep_02/rep_03 alongside this launch's
-# rep_00, which is neither re-run nor overwritten. Submitting
-# `seed: 0, repetitions: 4` instead would pick seed 0 back up (and with
-# auto_resume_from_latest_checkpoint on, resume it rather than restart it).
+# That is why seeds can be added by editing this one file instead of forking a
+# second config: `repetitions` is NOT part of the checkpoint fingerprint (that is
+# iterations/seed/params/resume_scope), so raising it leaves every existing seed's
+# rep_<n> directory and fingerprint untouched. Going 1 -> 5 adds seeds 1-4 and
+# leaves seed 0 exactly where it was.
 #
-# Written out explicitly rather than left to default: an absent `seed` also
-# means 0, but then "which seeds does this run cover" is invisible in the config.
+# Resubmitting while earlier seeds are still running is safe: each rep takes an
+# active-run lock under its resume dir, and a rep that cannot take it prints
+# "Active run lock held ...; skipping duplicate run" and surrenders. A seed that
+# is finished but not running is resumed from its checkpoint rather than redone
+# (auto_resume_from_latest_checkpoint), and one already at `iterations` is skipped.
+#
+# Keeping this in ONE file matters: a forked "supplement" config would have to
+# hold `params` byte-identical forever, and any drift would silently stop the
+# seeds from being seeds of the same configuration.
 seed: 0
-repetitions: 1
+repetitions: 5
 reps_per_job: 4
 reps_in_parallel: 4
 
