@@ -6,9 +6,24 @@ num_parallel_jobs: 30        # array throttle (%N). ~22 array tasks are produced
                              # below, so this is effectively "no throttle"; the
                              # real limit is allgpu's own queued-job cap.
 ntasks: 1
-cpus-per-task: 64            # only a fallback: num_gpus=auto OVERWRITES this per
-                             # array task with gpu_count * reps_per_gpu * cpus_per_rep.
-cpus_per_rep: 16
+cpus-per-task: 64            # num_gpus=auto OVERWRITES this per array task with
+                             # gpu_count * reps_per_gpu * cpus_per_rep, where
+                             # cpus_per_rep is derived from THIS value:
+                             # 64 / (max(auto_gpu_node_counts) * reps_per_gpu) = 64/4 = 16.
+#
+# Deliberately NO `cpus_per_rep:` key, even though the dt_rl template has one.
+# Setting it flips HOREKAAffinityGPUDistributingLocalScheduler.__init__ from its
+# self-adjusting branch to a hard assert:
+#     required = cpus_per_rep * queue_elements     # 16 * 4 = 64
+#     assert required <= len(os.sched_getaffinity(0))
+# With num_gpus=auto, queue_elements comes from the GPUs detected on the node at
+# RUNTIME, so if the cgroup hands back even one CPU fewer than --cpus-per-task
+# asked for, every rep on that node dies in the first second. Leaving the key out
+# takes the other branch instead:
+#     usable = min(cpus-per-task * ntasks, len(allowed_cpus))
+#     cpus_per_rep = usable // queue_elements
+# which yields the same 16 when the allocation is as requested, and degrades to a
+# smaller slice instead of crashing when it is not.
 mem-per-cpu: 1000            # per-CPU, so memory scales with the group's node size:
                              # GPUx1 -> 16 cpus -> 16 GB, GPUx4 -> 64 cpus -> 64 GB.
                              # A flat `mem:` would hand a 1-GPU node running 1 rep

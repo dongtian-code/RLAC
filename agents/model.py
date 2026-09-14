@@ -14,7 +14,13 @@ from jax.nn.initializers import zeros, constant
 def default_init(scale: Optional[float] = 1.0, *args, **kwargs):
     return nn.initializers.variance_scaling(scale, "fan_avg", "uniform")
 
-def orthogonal_init(scale: Optional[float] = jnp.sqrt(2.0), *args, **kwargs):
+# `scale` defaults to None rather than jnp.sqrt(2.0): a default argument runs at
+# import time, and building a jnp array there initialises JAX's CUDA context in
+# the importing process -- which breaks cw2's forked worker pool (see the note in
+# evaluation.py::supply_rng). math.sqrt gives the identical value off-device.
+def orthogonal_init(scale: Optional[float] = None, *args, **kwargs):
+    if scale is None:
+        scale = math.sqrt(2.0)
     return jax.nn.initializers.orthogonal(scale)
 
 def pytorch_init(scale: Optional[float] = 1.0, fan_in=None):

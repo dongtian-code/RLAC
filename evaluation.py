@@ -6,8 +6,25 @@ from tqdm import trange
 from functools import partial
 
 
-def supply_rng(f, rng=jax.random.PRNGKey(0)):
-    """Helper function to split the random number generator key before each call to the function."""
+def supply_rng(f, rng=None):
+    """Helper function to split the random number generator key before each call to the function.
+
+    `rng` MUST NOT default to `jax.random.PRNGKey(0)` in the signature. A default
+    argument is evaluated when the `def` executes, i.e. when this module is
+    imported -- and creating a PRNGKey initialises JAX's CUDA context in that
+    process. `main_cw2.py` imports this module at module scope, so the parent
+    process came up with a live CUDA context before cw2's
+    HOREKAAffinityGPUDistributingLocalScheduler forked its ProcessPoolExecutor
+    workers. Each forked child inherited that context and died on the first CUDA
+    call with:
+        cuCtxSetCurrent ... CUDA_ERROR_NOT_INITIALIZED: initialization error
+    surfacing as `BrokenProcessPool`, which killed the whole array task within
+    seconds of launch. Deferring the key into the body keeps the parent's JAX
+    uninitialised until after the fork, so every worker builds its own context
+    against its own CUDA_VISIBLE_DEVICES.
+    """
+    if rng is None:
+        rng = jax.random.PRNGKey(0)
 
     def wrapped(*args, **kwargs):
         nonlocal rng
