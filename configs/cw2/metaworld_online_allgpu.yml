@@ -2,9 +2,17 @@
 name: "SLURM"
 partition: "allgpu"          # allgpu (requeue) | comgpu/compgpu (cancel) | psgpu
 job-name: "RLAC-metaworld-allgpu"
-num_parallel_jobs: 30        # array throttle (%N). ~22 array tasks are produced
-                             # below, so this is effectively "no throttle"; the
-                             # real limit is allgpu's own queued-job cap.
+num_parallel_jobs: 120       # Array throttle. With num_gpus=auto this is NOT one
+                             # array: cw2 submits one per GPU-size group and
+                             # _auto_gpu_group_throttles splits this number across
+                             # them in proportion to group size, emitting
+                             # "--array=<indices>%<share>" each. 250 runs expand to
+                             # ~107 array tasks, so 120 leaves them unthrottled and
+                             # the real limit becomes allgpu's own queued-job cap.
+                             # To change it on an already-submitted launch there is
+                             # no need to cancel:
+                             #   scontrol update JobId=<array job id> ArrayTaskThrottle=120
+                             # applied to each of the group arrays.
 ntasks: 1
 cpus-per-task: 64            # num_gpus=auto OVERWRITES this per array task with
                              # gpu_count * reps_per_gpu * cpus_per_rep, where
@@ -58,11 +66,31 @@ resume_dir_name: "resume"
 # Two things this forbids, both enforced by cw2:
 #   * `gres`/`gpus`/`gpus-per-node`/`gpus-per-task` in sbatch_args (ConfigKeyError);
 #   * a hand-written `constraint` -- auto OVERWRITES sbatch_args["constraint"]
-#     with "GPUx{n}" per group. To restrict the GPU model, use `auto_gpu_models`
-#     (e.g. ["A100"]), which becomes "GPUx{n}&(A100)". Left unset here so every
-#     idle node qualifies; the old psgpu config's "GPUx1&A100" would now shrink
-#     the pool for no benefit.
+#     with "GPUx{n}&(<auto_gpu_models>)" per group. Restrict models with
+#     `auto_gpu_models` below, never with `constraint`.
 num_gpus: auto
+
+# Keep the old Pascal cards out of the pool. Measured on the 14.Sep launch, same
+# config, same 1000 iterations:
+#     A100-class node   30.7 s/it  ->  ~8 h per run
+#     P100 node        178.8 s/it  ->  ~50 h per run
+# a 6x spread decided purely by which card the task landed on. P100 (compute
+# capability 6.0) also forces XLA off the bundled ptxas and onto the driver's JIT
+# ("ptxas does not support CC 6.0"), which is the slow path. Since a sweep is only
+# finished when its SLOWEST run finishes, the extra 46 P100 nodes buy nothing.
+#
+# cw2 turns this into the Slurm constraint "GPUx{n}&(A100|H100|...)", and only
+# nodes carrying one of these features are considered idle when packing.
+#
+# Capacity on allgpu (sinfo -p allgpu -N -o '%f'): A100 65, V100 54, H200 16,
+# H100 6, RTX6000 5, L40S 5, A6000 4, RTX8000 2 = ~157 nodes. V100 is compute
+# capability 7.0, so it does NOT hit the CC 6.0 ptxas fallback that makes P100 the
+# slow path -- it is in for the extra 54 nodes. The single generic "V100" feature
+# covers all of them (V100-SXM2-32GB 34 + V100-PCIE-32GB 13 + V100S-PCIE-32GB 7),
+# so the variants do not need listing.
+#
+# P100 (46 nodes) is the only family deliberately excluded.
+auto_gpu_models: ["A100", "V100", "H100", "H200", "L40S", "A6000", "RTX6000", "RTX8000"]
 auto_gpu_node_counts: [1, 2, 4]
 auto_gpu_fallback_count: 4          # must appear in auto_gpu_node_counts
 auto_gpu_subtract_pending_priority: true   # reserve matching pending Priority jobs
