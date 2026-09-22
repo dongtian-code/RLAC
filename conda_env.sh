@@ -12,6 +12,7 @@ RLAC_CUDA="${RLAC_CUDA:-auto}"
 RLAC_SKIP_EXTERNAL_DEPS="${RLAC_SKIP_EXTERNAL_DEPS:-0}"
 RLAC_WITH_METAWORLD="${RLAC_WITH_METAWORLD:-0}"
 RLAC_WITH_D4RL="${RLAC_WITH_D4RL:-0}"
+RLAC_WITH_BOXPUSHING="${RLAC_WITH_BOXPUSHING:-0}"
 RLAC_DEPS_DIR="${RLAC_DEPS_DIR:-}"
 RLAC_SKIP_VERIFY="${RLAC_SKIP_VERIFY:-0}"
 
@@ -179,7 +180,7 @@ clone_or_update_repo() {
 
 install_external_repos() {
     if [[ "$RLAC_SKIP_EXTERNAL_DEPS" == "1" ]]; then
-        warn "Skipping external GitHub dependencies (cw2, and MetaWorld/D4RL if requested) because RLAC_SKIP_EXTERNAL_DEPS=1."
+        warn "Skipping external GitHub dependencies (cw2, and MetaWorld/D4RL/fancy_gym if requested) because RLAC_SKIP_EXTERNAL_DEPS=1."
         return
     fi
 
@@ -200,6 +201,27 @@ install_external_repos() {
         # out from under metaworld, dm_control and ogbench.
         clone_or_update_repo "Metaworld" "git@github.com:dongtian-code/Metaworld.git" "dt_branch"
         warn "MetaWorld pulls numpy back below 2 and pins mujoco==3.3.0, while requirements.txt asks for numpy==2.2.5 / mujoco==3.3.1. jax, dm_control and ogbench all work with numpy 1.26.4 + mujoco 3.3.0, but check those versions first if anything fails at import."
+    fi
+
+    if [[ "$RLAC_WITH_BOXPUSHING" == "1" ]]; then
+        # fancy_gym, for the BoxPushing envs (envs/box_pushing_utils.py).
+        #
+        # --no-deps is MANDATORY: fancy_gym pins mujoco==2.3.3 and
+        # gymnasium>=0.26, and resolving those downgrades mujoco out from under
+        # metaworld, dm_control and ogbench. Nothing of fancy_gym is imported
+        # either -- its package __init__ subclasses
+        # gymnasium.wrappers.EnvCompatibility, which gymnasium 1.0 removed, so
+        # `import fancy_gym` cannot run here at all. box_pushing_utils.py loads
+        # the single env module out of the installed tree in isolation, which is
+        # why the package still has to be *installed* (or at least importable)
+        # even though it is never imported as a whole.
+        # Installed NON-editable into this env's site-packages rather than
+        # through $DEPS_DIR: that checkout is shared with dt_rl, whose jobs run
+        # against it live on mujoco 2.3.3, and clone_or_update_repo would
+        # fetch/checkout/pull it out from under them.
+        log "Installing fancy_gym (BoxPushing) into this environment only."
+        run python -m pip install --no-cache-dir --no-deps \
+            "git+https://github.com/DongTian95/fancy_gymnasium.git@dt_branch"
     fi
 
     if [[ "$RLAC_WITH_D4RL" == "1" ]]; then
@@ -250,6 +272,13 @@ verify_install() {
         verify_module cw2
         if [[ "$RLAC_WITH_METAWORLD" == "1" ]]; then
             verify_module metaworld
+        fi
+        if [[ "$RLAC_WITH_BOXPUSHING" == "1" ]]; then
+            # NOT verify_module fancy_gym -- importing it is exactly what does
+            # not work. Check the env this repo actually builds instead.
+            log "Verifying the BoxPushing env builds."
+            run python -c "from envs.box_pushing_utils import make_box_pushing_env; e = make_box_pushing_env('fancy/BoxPushingRandomInitDense-v0'); e.reset(seed=0); e.step(e.action_space.sample()); print('  box_pushing  ok')" \
+                || die "The BoxPushing env failed to build -- see the traceback above."
         fi
         if [[ "$RLAC_WITH_D4RL" == "1" ]]; then
             verify_module d4rl
@@ -320,7 +349,8 @@ Useful options:
   RLAC_CUDA=0 bash conda_env.sh                  # force CPU-only JAX
   RLAC_WITH_METAWORLD=1 bash conda_env.sh        # also install MetaWorld
   RLAC_WITH_D4RL=1 bash conda_env.sh             # also install D4RL (AntMaze/Adroit)
-  RLAC_SKIP_EXTERNAL_DEPS=1 bash conda_env.sh    # skip cw2/MetaWorld/D4RL git installs
+  RLAC_WITH_BOXPUSHING=1 bash conda_env.sh       # also install fancy_gym (BoxPushing), --no-deps
+  RLAC_SKIP_EXTERNAL_DEPS=1 bash conda_env.sh    # skip cw2/MetaWorld/D4RL/fancy_gym git installs
   RLAC_DEPS_DIR=/path/to/deps bash conda_env.sh  # where external repos get cloned
 
 EOF

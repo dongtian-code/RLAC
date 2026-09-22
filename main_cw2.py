@@ -48,12 +48,12 @@ from cw2.cw_data import cw_logging
 from tqdm import tqdm
 
 from agents import agents as agent_registry
-from envs.env_utils import make_env_and_datasets
+from envs.env_utils import make_env_and_datasets, make_extra_train_envs
 from envs.ogbench_utils import make_ogbench_env_and_datasets
 from envs.robomimic_utils import is_robomimic_env
 from evaluation import evaluate
 from log_utils import CsvLogger, LoggingHelper, setup_wandb
-from utils.datasets import ReplayBuffer, process_train_dataset
+from utils.datasets import MultiEnvReplayBuffer, ReplayBuffer, process_train_dataset
 from utils.flax_utils import load_checkpoint, save_agent, save_checkpoint
 
 
@@ -69,8 +69,28 @@ def _agent_config_from_params(agent_params):
     agent_name = agent_params['agent_name']
     module = importlib.import_module(f'agents.{agent_name}')
     cfg = module.get_config()
+    # YAML has no tuples, so a swept `value_hidden_dims: [1024, 1024, 1024, 1024]`
+    # arrives as a list where get_config() declares a tuple. ConfigDict tolerates
+    # that, but the agent keeps its config as a STATIC (non-pytree) field, so the
+    # value ends up inside jit's cache key; normalising it to the declared type
+    # keeps a swept run byte-identical to the same shape written in get_config().
+    for key, value in agent_params.items():
+        if isinstance(value, list) and isinstance(cfg.get(key, None), tuple):
+            agent_params[key] = tuple(value)
     cfg.update(agent_params)
     return cfg
+
+
+def _crossed(prev, cur, interval):
+    """True when a multiple of `interval` lies in the half-open range (prev, cur].
+
+    The step counters advance by `num_train_envs` at a time, so the plain
+    `step % interval == 0` tests would step over their trigger. For a counter
+    that advances one at a time this is exactly `cur % interval == 0`.
+    """
+    if not interval:
+        return False
+    return (prev // interval) != (cur // interval)
 
 
 def _bool(value):
@@ -559,6 +579,10 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
         p = cw_config['params']
         random.seed(cw_config['seed'])
         np.random.seed(cw_config['seed'])
+        # Env-side seed, kept clear of the agent's. Spaced by 100 so a run's
+        # train envs (env_seed + 0..num_train_envs-1) never reach into the next
+        # repetition's block; the eval env sits 10000 above, out of both.
+        self.env_seed = int(cw_config['seed']) * 100
 
         self.resume_model_dir = cw_config.get('resume_model_dir', None)
         if self.resume_model_dir is not None:
@@ -614,10 +638,27 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
                 p['env_name'], dataset_path=self.dataset_paths[self.dataset_idx], compact_dataset=False,
             )
         else:
-            self.env, self.eval_env, train_dataset, _ = make_env_and_datasets(p['env_name'])
+            self.env, self.eval_env, train_dataset, _ = make_env_and_datasets(
+                p['env_name'], seed=self.env_seed)
 
         self.discount = p.get('discount', 0.99)
         self.horizon_length = p['horizon_length']
+
+        # Online data collection can run several independent copies of the train
+        # env and step all of them per online step, i.e. collect `num_train_envs`
+        # environment samples where the default config collects one. `env` stays
+        # the first of them so everything that only needs *an* env (example
+        # shapes, OGBench dataset reloading) is untouched at num_train_envs=1.
+        self.num_train_envs = int(p.get('num_train_envs', 1))
+        if self.num_train_envs < 1:
+            raise ValueError(f'num_train_envs must be >= 1, got {self.num_train_envs}.')
+        if self.num_train_envs > 1 and p.get('save_all_online_states', False):
+            raise ValueError(
+                'save_all_online_states records a single env stream and cannot '
+                f'describe num_train_envs={self.num_train_envs} interleaved envs.'
+            )
+        self.train_envs = [self.env] + make_extra_train_envs(
+            p['env_name'], self.num_train_envs - 1, seed=self.env_seed + 1)
 
         def build_train_dataset(ds):
             return process_train_dataset(
@@ -663,8 +704,8 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
 
         self.online_rng = jax.random.split(jax.random.PRNGKey(cw_config['seed']), 2)[0]
         self.replay_buffer = None
-        self.action_queue = []
-        self.ob = None
+        self.action_queues = [[] for _ in range(self.num_train_envs)]
+        self.obs = [None] * self.num_train_envs
         self.online_extra_data = defaultdict(list)
 
         # --- resumable bookkeeping (overwritten below if resuming) -----------------
@@ -681,13 +722,7 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
             # phase it gets its contents restored from the checkpoint; during the
             # offline phase the checkpoint carries no buffer, so this allocation is
             # just a placeholder that `_transition_to_online` later replaces.
-            buffer_size = p.get('buffer_size', 2000000)
-            if self.train_dataset is None:
-                self.replay_buffer = ReplayBuffer.create(self._example_transition, size=buffer_size)
-            else:
-                self.replay_buffer = ReplayBuffer.create_from_initial_dataset(
-                    dict(self.train_dataset), size=max(buffer_size, self.train_dataset.size + 1),
-                )
+            self.replay_buffer = self._make_replay_buffer(cw_config)
             self.agent, extra = load_checkpoint(resume_checkpoint_path, self.agent, replay_buffer=self.replay_buffer)
             self.n_completed = extra['num_iterations']
             self.phase = extra['phase']
@@ -703,7 +738,7 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
             wandb_resume = 'allow'
 
             if self.phase == 'online':
-                self.ob, _ = self.env.reset()
+                self._reset_train_envs()
             else:
                 self.replay_buffer = None
 
@@ -751,18 +786,44 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
 
         self.progress_bar = tqdm(total=cw_config['iterations'], initial=self.n_completed)
 
-    def _transition_to_online(self, cw_config):
+    def _reset_train_envs(self):
+        """Reset every train env and drop its pending action chunk.
+
+        Also the resume path: a checkpoint carries the replay buffer but not the
+        envs' simulator state, so a requeued run restarts the episodes it was in
+        the middle of. Queued actions belong to the episode that is being
+        abandoned, so they go too.
+        """
+        self.obs = [env.reset()[0] for env in self.train_envs]
+        self.action_queues = [[] for _ in self.train_envs]
+
+    def _make_replay_buffer(self, cw_config):
+        """Build the online replay buffer, split per env when there are several.
+
+        `sample_sequence` reads action chunks out of consecutive buffer slots, so
+        each env needs its own contiguous region -- see
+        `utils/datasets.py::MultiEnvReplayBuffer`.
+        """
         p = cw_config['params']
         buffer_size = p.get('buffer_size', 2000000)
         if self.train_dataset is None:
-            # No prior data (e.g. MetaWorld) -- start from an empty buffer.
-            self.replay_buffer = ReplayBuffer.create(self._example_transition, size=buffer_size)
-        else:
-            self.replay_buffer = ReplayBuffer.create_from_initial_dataset(
-                dict(self.train_dataset), size=max(buffer_size, self.train_dataset.size + 1),
+            # No prior data (e.g. MetaWorld, BoxPushing) -- start from an empty buffer.
+            if self.num_train_envs > 1:
+                return MultiEnvReplayBuffer.create(
+                    self._example_transition, size=buffer_size, num_envs=self.num_train_envs)
+            return ReplayBuffer.create(self._example_transition, size=buffer_size)
+        if self.num_train_envs > 1:
+            raise NotImplementedError(
+                'num_train_envs > 1 with an offline dataset is not supported: the '
+                'dataset would have to be split across the per-env buffers.'
             )
-        self.ob, _ = self.env.reset()
-        self.action_queue = []
+        return ReplayBuffer.create_from_initial_dataset(
+            dict(self.train_dataset), size=max(buffer_size, self.train_dataset.size + 1),
+        )
+
+    def _transition_to_online(self, cw_config):
+        self.replay_buffer = self._make_replay_buffer(cw_config)
+        self._reset_train_envs()
         self.phase = 'online'
         self.online_step = 0
 
@@ -805,33 +866,37 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
             )
             self.logger.log(eval_info, 'eval', step=self.log_step)
 
-    def _online_step(self, cw_config):
+    def _collect_from_env(self, cw_config, env_idx):
+        """Step one train env once and store the transition. Returns its `info`."""
         p = cw_config['params']
-        self.online_step += 1
-        self.log_step += 1
-        i = self.online_step
+        env = self.train_envs[env_idx]
+        queue = self.action_queues[env_idx]
+        ob = self.obs[env_idx]
 
         self.online_rng, key = jax.random.split(self.online_rng)
-        if len(self.action_queue) == 0:
-            action = self.agent.sample_actions(observations=self.ob, rng=key)
+        if len(queue) == 0:
+            # One agent call per env rather than one batched call over the envs
+            # that need a chunk: `sample_actions` is jitted on the observation
+            # shape, and a per-step-varying batch size would compile a variant per
+            # size. Envs desync after the first episode ends, so a batched call
+            # would rarely be full anyway.
+            action = self.agent.sample_actions(observations=ob, rng=key)
             for a in np.array(action).reshape(-1, self.action_dim):
-                self.action_queue.append(a)
-        action = self.action_queue.pop(0)
+                queue.append(a)
+        action = queue.pop(0)
 
-        next_ob, int_reward, terminated, truncated, info = self.env.step(action)
+        next_ob, int_reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
         if p.get('save_all_online_states', False):
-            state = self.env.get_state()
-            self.online_extra_data['steps'].append(i)
+            # Rejected at init for num_train_envs > 1, so this is env 0 alone.
+            state = env.get_state()
+            self.online_extra_data['steps'].append(self.online_step)
             self.online_extra_data['obs'].append(np.copy(next_ob))
             self.online_extra_data['qpos'].append(np.copy(state['qpos']))
             self.online_extra_data['qvel'].append(np.copy(state['qvel']))
             if 'button_states' in state:
                 self.online_extra_data['button_states'].append(np.copy(state['button_states']))
-
-        env_info = {k: v for k, v in info.items() if k.startswith('distance')}
-        self.logger.log(env_info, 'env', step=self.log_step)
 
         env_name = p['env_name']
         if 'antmaze' in env_name and ('diverse' in env_name or 'play' in env_name or 'umaze' in env_name):
@@ -843,16 +908,42 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
             int_reward = (int_reward != 0.0) * -1.0
 
         transition = dict(
-            observations=self.ob, actions=action, rewards=int_reward, terminals=float(done),
+            observations=ob, actions=action, rewards=int_reward, terminals=float(done),
             masks=1.0 - terminated, next_observations=next_ob,
         )
-        self.replay_buffer.add_transition(transition)
+        if self.num_train_envs > 1:
+            self.replay_buffer.add_transition(transition, env_idx)
+        else:
+            self.replay_buffer.add_transition(transition)
 
         if done:
-            self.ob, _ = self.env.reset()
-            self.action_queue = []
+            self.obs[env_idx], _ = env.reset()
+            self.action_queues[env_idx] = []
         else:
-            self.ob = next_ob
+            self.obs[env_idx] = next_ob
+        return info
+
+    def _online_step(self, cw_config):
+        """Collect `num_train_envs` environment samples and train on them.
+
+        Returns the number of environment samples collected, which is what
+        `online_step`, `chunk_size`, `online_steps` and every `*_interval` are
+        counted in -- so those knobs keep meaning the same thing whether a run
+        collects from one env or four, and stay comparable with SimbaV2, which
+        also logs against environment steps.
+        """
+        p = cw_config['params']
+        collected = self.num_train_envs
+        prev_step = self.online_step
+        self.online_step += collected
+        self.log_step += collected
+        i = self.online_step
+
+        for env_idx in range(self.num_train_envs):
+            info = self._collect_from_env(cw_config, env_idx)
+            if env_idx == 0:
+                env_info = {k: v for k, v in info.items() if k.startswith('distance')}
+                self.logger.log(env_info, 'env', step=self.log_step)
 
         update_info = {}
         if i >= p.get('start_training', 5000):
@@ -863,11 +954,15 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
             batch = jax.tree.map(lambda x: x.reshape((utd_ratio, self.agent_cfg['batch_size']) + x.shape[1:]), batch)
             self.agent, update_info = self.agent.batch_update(batch)
 
-        if i % p['log_interval'] == 0 and update_info:
+        # `_crossed` instead of `i % interval == 0`: `i` advances by
+        # num_train_envs, so a modulo test would step over its trigger. At
+        # num_train_envs=1 the two are the same test.
+        if _crossed(prev_step, i, p['log_interval']) and update_info:
             self.logger.log(update_info, 'online_agent', step=self.log_step)
 
         online_steps = p['online_steps']
-        if i == online_steps - 1 or (p.get('eval_interval', 0) != 0 and i % p['eval_interval'] == 0):
+        last_step = prev_step < online_steps - 1 <= i
+        if last_step or _crossed(prev_step, i, p.get('eval_interval', 0)):
             eval_info, _, _ = evaluate(
                 agent=self.agent, env=self.eval_env, action_dim=self.action_dim,
                 num_eval_episodes=p.get('eval_episodes', 50), num_video_episodes=p.get('video_episodes', 0),
@@ -875,8 +970,10 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
             )
             self.logger.log(eval_info, 'eval', step=self.log_step)
 
-        if p.get('save_interval', -1) > 0 and i % p['save_interval'] == 0:
+        if p.get('save_interval', -1) > 0 and _crossed(prev_step, i, p['save_interval']):
             save_agent(self.agent, cw_config['_rep_log_path'], self.log_step)
+
+        return collected
 
     def _finish_run(self, cw_config):
         p = cw_config['params']
@@ -921,8 +1018,7 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
                     self.phase = 'done'
                     self._finish_run(cw_config)
                     continue
-                self._online_step(cw_config)
-                steps_done += 1
+                steps_done += self._online_step(cw_config)
                 if self.online_step >= p.get('online_steps', 0):
                     self.phase = 'done'
                     self._finish_run(cw_config)

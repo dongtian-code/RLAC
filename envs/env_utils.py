@@ -93,13 +93,42 @@ class FrameStackWrapper(gymnasium.Wrapper):
         return self.get_observation(), reward, terminated, truncated, info
 
 
-def make_env_and_datasets(env_name, frame_stack=None, action_clip_eps=1e-5):
+def make_extra_train_envs(env_name, count, seed=0):
+    """Build `count` ADDITIONAL, independent copies of the online training env.
+
+    `make_env_and_datasets` already returns one train env; this supplies the rest
+    when a run collects from several envs per step (`num_train_envs` in
+    main_cw2.py). They are plain, separate env objects stepped in sequence rather
+    than a gymnasium vector env: the online loop keeps a per-env action-chunk
+    queue and writes each env into its own replay-buffer segment, so it needs the
+    envs individually, and BoxPushing's mujoco step is cheap next to the agent
+    update that follows it.
+
+    Only the env families that a multi-env config actually uses are implemented;
+    anything else raises rather than silently running with one env.
+    """
+    if count <= 0:
+        return []
+    if env_name.startswith('fancy/'):
+        from envs import box_pushing_utils
+
+        return [box_pushing_utils.make_box_pushing_env(env_name, seed=seed + i) for i in range(count)]
+    raise NotImplementedError(
+        f'num_train_envs > 1 is not implemented for env_name={env_name!r}. '
+        'Add a factory for its family in envs/env_utils.py::make_extra_train_envs.'
+    )
+
+
+def make_env_and_datasets(env_name, frame_stack=None, action_clip_eps=1e-5, seed=0):
     """Make offline RL environment and datasets.
 
     Args:
         env_name: Name of the environment or dataset.
         frame_stack: Number of frames to stack.
         action_clip_eps: Epsilon for action clipping.
+        seed: Env-side seed. Only the BoxPushing branch honours it; the other
+            families keep the seeding they had before it was added, so runs that
+            are in flight are not silently re-randomised.
 
     Returns:
         A tuple of the environment, evaluation environment, training dataset, and validation dataset.
@@ -150,6 +179,13 @@ def make_env_and_datasets(env_name, frame_stack=None, action_clip_eps=1e-5):
         from envs import metaworld_utils
 
         env, eval_env, train_dataset, val_dataset = metaworld_utils.make_metaworld_env_and_datasets(env_name)
+    elif env_name.startswith('fancy/'):
+        # fancy_gym BoxPushing. Like MetaWorld it ships no offline dataset, so it
+        # is online-only (offline_steps=0).
+        from envs import box_pushing_utils
+
+        env, eval_env, train_dataset, val_dataset = box_pushing_utils.make_box_pushing_env_and_datasets(
+            env_name, seed=seed)
     else:
         raise ValueError(f'Unsupported environment: {env_name}')
 

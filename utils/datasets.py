@@ -254,6 +254,11 @@ class ReplayBuffer(Dataset):
 
     def load_state_dict(self, state):
         """Restore the buffer in place from a snapshot produced by `state_dict`."""
+        if state.get('multi_env'):
+            raise ValueError(
+                'This checkpoint holds a per-env replay buffer (num_train_envs > 1) '
+                'and cannot be resumed into a single-env run.'
+            )
         if state['max_size'] != self.max_size:
             raise ValueError(
                 f'Checkpointed replay buffer size {state["max_size"]} does not match '
@@ -263,6 +268,103 @@ class ReplayBuffer(Dataset):
             self._dict[k][:] = v
         self.pointer = state['pointer']
         self.size = state['size']
+
+
+class MultiEnvReplayBuffer:
+    """`num_envs` independent `ReplayBuffer`s behind (almost) the single-buffer API.
+
+    `ReplayBuffer.sample_sequence` builds an action chunk out of CONSECUTIVE
+    slots (`idxs + i`), which only means anything while the buffer is in
+    trajectory order. Writing several parallel envs into one flat buffer
+    round-robin would make every sampled chunk span `sequence_length` different
+    envs, and the `terminals`/`valid` masking would not catch it -- adjacent
+    slots from different envs carry no terminal. Each env therefore gets its own
+    contiguous buffer of `size // num_envs` transitions, and a batch is drawn
+    proportionally from all of them.
+
+    The API differs from `ReplayBuffer` in exactly one place: `add_transition`
+    takes the env index. `state_dict`/`load_state_dict` keep the same duck-typed
+    contract `utils/flax_utils.py::save_checkpoint` relies on.
+    """
+
+    def __init__(self, buffers):
+        self.buffers = list(buffers)
+        self.num_envs = len(self.buffers)
+        self.max_size = sum(b.max_size for b in self.buffers)
+
+    @classmethod
+    def create(cls, transition, size, num_envs):
+        """Split `size` evenly across `num_envs` per-env buffers."""
+        if num_envs < 1:
+            raise ValueError(f'num_envs must be >= 1, got {num_envs}.')
+        per_env = size // num_envs
+        if per_env < 1:
+            raise ValueError(f'buffer_size={size} is too small for {num_envs} envs.')
+        return cls([ReplayBuffer.create(transition, size=per_env) for _ in range(num_envs)])
+
+    @property
+    def size(self):
+        return sum(b.size for b in self.buffers)
+
+    def add_transition(self, transition, env_idx):
+        self.buffers[env_idx].add_transition(transition)
+
+    def clear(self):
+        for buffer in self.buffers:
+            buffer.clear()
+
+    def sample_sequence(self, batch_size, sequence_length, discount):
+        """Draw `batch_size` chunks spread over the per-env buffers.
+
+        Only buffers holding at least `sequence_length` transitions are drawn
+        from -- `ReplayBuffer.sample_sequence` would otherwise call
+        `np.random.randint` with a non-positive bound. In practice all envs step
+        in lockstep, so the split is even.
+        """
+        ready = [b for b in self.buffers if b.size >= sequence_length]
+        if not ready:
+            raise ValueError(
+                f'No per-env replay buffer holds {sequence_length} transitions yet '
+                '(raise `start_training` above num_train_envs * horizon_length).'
+            )
+        counts = [batch_size // len(ready)] * len(ready)
+        for i in range(batch_size % len(ready)):
+            counts[i] += 1
+
+        batches = [
+            buffer.sample_sequence(count, sequence_length=sequence_length, discount=discount)
+            for buffer, count in zip(ready, counts)
+            if count > 0
+        ]
+        if len(batches) == 1:
+            return batches[0]
+        batch = {k: np.concatenate([b[k] for b in batches], axis=0) for k in batches[0]}
+        # Shuffle across envs: the caller reshapes the batch into `utd_ratio`
+        # sub-batches, and concatenated blocks would put one env per sub-batch.
+        perm = np.random.permutation(batch_size)
+        return {k: v[perm] for k, v in batch.items()}
+
+    def state_dict(self):
+        return {
+            'multi_env': True,
+            'num_envs': self.num_envs,
+            'buffers': [b.state_dict() for b in self.buffers],
+        }
+
+    def load_state_dict(self, state):
+        if not state.get('multi_env'):
+            raise ValueError(
+                'This checkpoint holds a single-env replay buffer; it cannot be '
+                'resumed with num_train_envs > 1. Start a new resume_scope_name.'
+            )
+        if state['num_envs'] != self.num_envs:
+            raise ValueError(
+                f'Checkpointed replay buffer has {state["num_envs"]} envs, '
+                f'the current run has {self.num_envs}.'
+            )
+        for buffer, sub_state in zip(self.buffers, state['buffers']):
+            buffer.load_state_dict(sub_state)
+
 
 def add_history(dataset, history_length):
 
