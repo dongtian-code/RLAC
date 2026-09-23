@@ -134,7 +134,23 @@ def make_env_and_datasets(env_name, frame_stack=None, action_clip_eps=1e-5, seed
         A tuple of the environment, evaluation environment, training dataset, and validation dataset.
     """
 
-    if 'singletask' in env_name:
+    # The prefixed families must be tested first. The substring tests below would
+    # claim some of their names: the Adroit test matches 'door' (door-close/lock/
+    # open/unlock), 'hammer' and the 'pen' in drawer-/faucet-/window-open, which
+    # sent those 8 MetaWorld tasks to D4RL, where they crashed before wandb.init.
+    if env_name.startswith('metaworld/'):
+        # MetaWorld. No offline dataset exists for it -- online-only (offline_steps=0).
+        from envs import metaworld_utils
+
+        env, eval_env, train_dataset, val_dataset = metaworld_utils.make_metaworld_env_and_datasets(env_name)
+    elif env_name.startswith('fancy/'):
+        # fancy_gym BoxPushing. Like MetaWorld it ships no offline dataset, so it
+        # is online-only (offline_steps=0).
+        from envs import box_pushing_utils
+
+        env, eval_env, train_dataset, val_dataset = box_pushing_utils.make_box_pushing_env_and_datasets(
+            env_name, seed=seed)
+    elif 'singletask' in env_name:
         # OGBench.
         import ogbench
 
@@ -174,18 +190,6 @@ def make_env_and_datasets(env_name, frame_stack=None, action_clip_eps=1e-5, seed
         eval_env = EpisodeMonitor(eval_env)
         dataset = robomimic_utils.get_dataset(env, env_name)
         train_dataset, val_dataset = dataset, None
-    elif env_name.startswith('metaworld/'):
-        # MetaWorld. No offline dataset exists for it -- online-only (offline_steps=0).
-        from envs import metaworld_utils
-
-        env, eval_env, train_dataset, val_dataset = metaworld_utils.make_metaworld_env_and_datasets(env_name)
-    elif env_name.startswith('fancy/'):
-        # fancy_gym BoxPushing. Like MetaWorld it ships no offline dataset, so it
-        # is online-only (offline_steps=0).
-        from envs import box_pushing_utils
-
-        env, eval_env, train_dataset, val_dataset = box_pushing_utils.make_box_pushing_env_and_datasets(
-            env_name, seed=seed)
     else:
         raise ValueError(f'Unsupported environment: {env_name}')
 

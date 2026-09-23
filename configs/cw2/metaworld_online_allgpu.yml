@@ -142,13 +142,16 @@ name: "RLAC-metaworld-allgpu"
 # RE-RUN LAUNCH (24.Sep.2026). The 14.Sep launch (commits 44ea6ce/ca283c5, same
 # params: 50 tasks x seeds 0/2/4/6/8, scope
 # "metaworld_randinit_lastframe_14.Sep.2026b") never produced a W&B run for 41
-# of its 250 runs: they either never started or died before wandb.init, and
-# nothing on W&B says which -- check their slurmlog if the re-run fails the same
-# way. Only those are trained, from scratch, into the SAME W&B group as the
-# other 209 runs -- see `list:` at the bottom:
+# of its 250 runs. For 40 of them, the 8 tasks below, that is a code bug:
+# envs/env_utils.py::make_env_and_datasets tested the D4RL Adroit substrings
+# ('door', 'hammer', 'pen' as in drawer-/faucet-/window-open) before the
+# 'metaworld/' prefix. Those tasks were built as D4RL envs and crashed before
+# wandb.init. Fixed on 24.Sep. The first 24.Sep submission still ran the old
+# code copy: those 40 runs crashed the same way, and only peg-insert-side seed
+# 0 (the 41st run) trains, as W&B run 2qci40m3. So this list is:
 #   door-close, door-lock, door-open, door-unlock, drawer-open, faucet-open,
 #   hammer, window-open   all five seeds (0, 2, 4, 6, 8)
-#   peg-insert-side       seed 0
+# They are trained from scratch into the SAME W&B group as the other 210 runs.
 # Every other run reached at least 4.94M (the last eval is at 4999999), so none
 # of them is repeated.
 #
@@ -273,8 +276,8 @@ params:
     batch_size: 256
     actor_num_samples: 32     # only read when actor_type == "best-of-n"
 
-# Zipped element by element: run k trains env_name[k] with seed[k] -- 8 x 5 + 1
-# = 41 runs. An explicit `seed` in the sweep is excluded from cw2's experiment
+# Zipped element by element: run k trains env_name[k] with seed[k] -- 8 x 5 = 40
+# runs. An explicit `seed` in the sweep is excluded from cw2's experiment
 # name, so each run keeps the 14.Sep launch's per-task directory and W&B run name
 # (<task>_sd<seed>); only the resume scope above differs. The full 50-task grid of
 # that launch is in commit ca283c5.
@@ -288,7 +291,6 @@ list:
     "metaworld/faucet-open-v2", "metaworld/faucet-open-v2", "metaworld/faucet-open-v2", "metaworld/faucet-open-v2", "metaworld/faucet-open-v2",
     "metaworld/hammer-v2", "metaworld/hammer-v2", "metaworld/hammer-v2", "metaworld/hammer-v2", "metaworld/hammer-v2",
     "metaworld/window-open-v2", "metaworld/window-open-v2", "metaworld/window-open-v2", "metaworld/window-open-v2", "metaworld/window-open-v2",
-    "metaworld/peg-insert-side-v2",
   ]
   seed: [
     0, 2, 4, 6, 8,  # door-close-v2
@@ -299,5 +301,4 @@ list:
     0, 2, 4, 6, 8,  # faucet-open-v2
     0, 2, 4, 6, 8,  # hammer-v2
     0, 2, 4, 6, 8,  # window-open-v2
-    0,              # peg-insert-side-v2
   ]
