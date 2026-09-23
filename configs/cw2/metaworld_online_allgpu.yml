@@ -1,7 +1,7 @@
 ---
 name: "SLURM"
 partition: "allgpu"          # allgpu (requeue) | comgpu/compgpu (cancel) | psgpu
-job-name: "RLAC-metaworld-allgpu"
+job-name: "RLAC-metaworld-rerun"     # squeue label; was "RLAC-metaworld-allgpu"
 num_parallel_jobs: 120       # Array throttle. With num_gpus=auto this is NOT one
                              # array: cw2 submits one per GPU-size group and
                              # _auto_gpu_group_throttles splits this number across
@@ -139,41 +139,66 @@ experiment_copy_auto_dst: "/gpfs/petra3/scratch/dongtian/CODE_COPY_RLAC/"
 ---
 name: "RLAC-metaworld-allgpu"
 
-# Fresh resume lineage. MetaWorld's goal-observable env used to be created frozen
-# (metaworld/env_dict.py sets _freeze_rand_vec=True after one throwaway reset), so
-# every reset replayed a single object pose + goal; envs/metaworld_utils.py now
-# calls _unfreeze_task() to restore the per-reset task distribution, and
-# evaluation reads `success` from the episode's final step. Checkpoints written
-# before that change hold a replay buffer collected on the frozen task -- resuming
-# one would silently mix the two. A new scope name makes those unreachable.
-resume_scope_name: "metaworld_randinit_lastframe_14.Sep.2026b"
+# RE-RUN LAUNCH (24.Sep.2026). The 14.Sep launch (commits 44ea6ce/ca283c5, same
+# params: 50 tasks x seeds 0/2/4/6/8, scope
+# "metaworld_randinit_lastframe_14.Sep.2026b") never produced a W&B run for 41
+# of its 250 runs: they either never started or died before wandb.init, and
+# nothing on W&B says which -- check their slurmlog if the re-run fails the same
+# way. Only those are trained, from scratch, into the SAME W&B group as the
+# other 209 runs -- see `list:` at the bottom:
+#   door-close, door-lock, door-open, door-unlock, drawer-open, faucet-open,
+#   hammer, window-open   all five seeds (0, 2, 4, 6, 8)
+#   peg-insert-side       seed 0
+# Every other run reached at least 4.94M (the last eval is at 4999999), so none
+# of them is repeated.
+#
+# The group stays, but the scope must NOT: the resume dir is
+# <task path>/resume/<scope>/rep_<seed>/model, and under the old scope that is
+# where anything the 14.Sep attempt of these runs left behind would sit --
+# auto_resume_from_latest_checkpoint would pick it up and continue it. Under this
+# new scope every candidate dir is empty (the log_* scan is skipped whenever a
+# scope is set), the active-run lock moves with it, and the config fingerprint,
+# which hashes the scope, would reject an old checkpoint anyway. With no
+# checkpoint there is no stored wandb_run_id either, so every rep opens a NEW W&B
+# run in the group. Put the old scope back only to requeue or resume the original
+# runs.
+#
+# (The previous scope bump, to 14.Sep.2026b, was for a different reason:
+# MetaWorld's goal-observable env used to be created frozen, so checkpoints from
+# before envs/metaworld_utils.py::_unfreeze_task hold a buffer collected on a
+# single task instance.)
+resume_scope_name: "metaworld_randinit_lastframe_14.Sep.2026b_rerun_24.Sep.2026"
 
-# 50 tasks x 1 seed = 50 runs. reps_per_job / reps_in_parallel are placeholders:
-# with num_gpus=auto, cw2 overwrites BOTH per array task from the node size it
-# assigned (cw2/job.py sets REPS_P_JOB and REPS_PARALL from auto_gpu_job_capacities),
-# so a GPUx1 task runs 1 rep and a GPUx4 task runs 4.
-# Seeds 0-4. cw2 unfolds repetitions as _rep_idx 0..repetitions-1 and
-# main_cw2.py's prepare_rep_configs turns that into `seed = seed + _rep_idx`, then
-# renames each run's directory from cw2's rep_<_rep_idx> to rep_<seed>. A run's
-# on-disk identity is its SEED, not its repetition index.
+# The seeds come from `list:` below, NOT from seed/repetitions. cw2 treats a
+# `seed` entry in a sweep as an explicit seed (conf_unfolder.py: that run gets
+# the seed and repetitions=1), so _rep_idx is 0 and main_cw2.py's
+# prepare_rep_configs (`seed = seed + _rep_idx`, then rep_<_rep_idx> ->
+# rep_<seed>) keeps the seed as written. A run's on-disk identity is its SEED.
 #
-# That is why seeds can be added by editing this one file instead of forking a
-# second config: `repetitions` is NOT part of the checkpoint fingerprint (that is
-# iterations/seed/params/resume_scope), so raising it leaves every existing seed's
-# rep_<n> directory and fingerprint untouched. Going 1 -> 5 adds seeds 1-4 and
-# leaves seed 0 exactly where it was.
+# Do not reproduce specific seeds with `seed: 0, repetitions: N`. The 14.Sep
+# launch wrote `seed: 0, repetitions: 5` and got seeds 0, 2, 4, 6, 8, not 0-4:
+# with num_gpus=auto, cw2 persists the already-prepared runtime config
+# (cw_slurm.py::_persist_runtime_config) and every job re-reads it, so
+# prepare_rep_configs runs a second time on a seed that is already
+# base+_rep_idx. With explicit seeds _rep_idx is 0 and both passes agree.
 #
-# Resubmitting while earlier seeds are still running is safe: each rep takes an
-# active-run lock under its resume dir, and a rep that cannot take it prints
-# "Active run lock held ...; skipping duplicate run" and surrenders. A seed that
-# is finished but not running is resumed from its checkpoint rather than redone
-# (auto_resume_from_latest_checkpoint), and one already at `iterations` is skipped.
+# Resubmitting this file is safe: each rep takes an active-run lock under its
+# (new-scope) resume dir, and a rep that cannot take it prints "Active run lock
+# held ...; skipping duplicate run" and surrenders. A re-run that is interrupted
+# resumes from its OWN checkpoint under this scope, and one already at
+# `iterations` is skipped.
 #
-# Keeping this in ONE file matters: a forked "supplement" config would have to
-# hold `params` byte-identical forever, and any drift would silently stop the
-# seeds from being seeds of the same configuration.
+# reps_per_job / reps_in_parallel are placeholders: with num_gpus=auto, cw2
+# overwrites BOTH per array task from the node size it assigned (cw2/job.py sets
+# REPS_P_JOB and REPS_PARALL from auto_gpu_job_capacities), so a GPUx1 task runs
+# 1 rep and a GPUx4 task runs 4.
+#
+# Keeping this in ONE file matters: `params` below are byte-identical to the
+# 14.Sep launch, which is what makes these runs seeds of the same configuration.
+# The only addition is the params.seed that cw2 writes for an explicit seed; it
+# is only logged into the W&B config, and training reads cw_config['seed'].
 seed: 0
-repetitions: 5
+repetitions: 1
 reps_per_job: 4
 reps_in_parallel: 4
 
@@ -196,8 +221,9 @@ resume_dir_name: "resume"
 # above is set. main_cw2.py::_resume_scope_name reads resume_scope_name first and
 # only falls back to this group when that key is absent, so renaming the group
 # alone would start a new W&B group that RESUMES the old group's checkpoints.
-# To really start over, change resume_scope_name too -- both were bumped together
-# for this launch.
+# To really start over, change resume_scope_name too. The 14.Sep launch bumped
+# both; this re-run bumps only the scope, on purpose, so that the fresh runs land
+# in the original group.
 wandb:
   project: "[rlac online]metaworld"
   group: "[rlac] metaworld 50 tasks 5M, randinit+lastframe, 140926b"
@@ -247,56 +273,31 @@ params:
     batch_size: 256
     actor_num_samples: 32     # only read when actor_type == "best-of-n"
 
-grid:
+# Zipped element by element: run k trains env_name[k] with seed[k] -- 8 x 5 + 1
+# = 41 runs. An explicit `seed` in the sweep is excluded from cw2's experiment
+# name, so each run keeps the 14.Sep launch's per-task directory and W&B run name
+# (<task>_sd<seed>); only the resume scope above differs. The full 50-task grid of
+# that launch is in commit ca283c5.
+list:
   env_name: [
-    "metaworld/assembly-v2",
-    "metaworld/basketball-v2",
-    "metaworld/bin-picking-v2",
-    "metaworld/box-close-v2",
-    "metaworld/button-press-topdown-v2",
-    "metaworld/button-press-topdown-wall-v2",
-    "metaworld/button-press-v2",
-    "metaworld/button-press-wall-v2",
-    "metaworld/coffee-button-v2",
-    "metaworld/coffee-pull-v2",
-    "metaworld/coffee-push-v2",
-    "metaworld/dial-turn-v2",
-    "metaworld/disassemble-v2",
-    "metaworld/door-close-v2",
-    "metaworld/door-lock-v2",
-    "metaworld/door-open-v2",
-    "metaworld/door-unlock-v2",
-    "metaworld/drawer-close-v2",
-    "metaworld/drawer-open-v2",
-    "metaworld/faucet-open-v2",
-    "metaworld/faucet-close-v2",
-    "metaworld/hammer-v2",
-    "metaworld/hand-insert-v2",
-    "metaworld/handle-press-side-v2",
-    "metaworld/handle-press-v2",
-    "metaworld/handle-pull-side-v2",
-    "metaworld/handle-pull-v2",
-    "metaworld/lever-pull-v2",
+    "metaworld/door-close-v2", "metaworld/door-close-v2", "metaworld/door-close-v2", "metaworld/door-close-v2", "metaworld/door-close-v2",
+    "metaworld/door-lock-v2", "metaworld/door-lock-v2", "metaworld/door-lock-v2", "metaworld/door-lock-v2", "metaworld/door-lock-v2",
+    "metaworld/door-open-v2", "metaworld/door-open-v2", "metaworld/door-open-v2", "metaworld/door-open-v2", "metaworld/door-open-v2",
+    "metaworld/door-unlock-v2", "metaworld/door-unlock-v2", "metaworld/door-unlock-v2", "metaworld/door-unlock-v2", "metaworld/door-unlock-v2",
+    "metaworld/drawer-open-v2", "metaworld/drawer-open-v2", "metaworld/drawer-open-v2", "metaworld/drawer-open-v2", "metaworld/drawer-open-v2",
+    "metaworld/faucet-open-v2", "metaworld/faucet-open-v2", "metaworld/faucet-open-v2", "metaworld/faucet-open-v2", "metaworld/faucet-open-v2",
+    "metaworld/hammer-v2", "metaworld/hammer-v2", "metaworld/hammer-v2", "metaworld/hammer-v2", "metaworld/hammer-v2",
+    "metaworld/window-open-v2", "metaworld/window-open-v2", "metaworld/window-open-v2", "metaworld/window-open-v2", "metaworld/window-open-v2",
     "metaworld/peg-insert-side-v2",
-    "metaworld/pick-place-wall-v2",
-    "metaworld/pick-out-of-hole-v2",
-    "metaworld/reach-v2",
-    "metaworld/push-back-v2",
-    "metaworld/push-v2",
-    "metaworld/pick-place-v2",
-    "metaworld/plate-slide-v2",
-    "metaworld/plate-slide-side-v2",
-    "metaworld/plate-slide-back-v2",
-    "metaworld/plate-slide-back-side-v2",
-    "metaworld/peg-unplug-side-v2",
-    "metaworld/push-wall-v2",
-    "metaworld/soccer-v2",
-    "metaworld/stick-push-v2",
-    "metaworld/stick-pull-v2",
-    "metaworld/reach-wall-v2",
-    "metaworld/shelf-place-v2",
-    "metaworld/sweep-into-v2",
-    "metaworld/sweep-v2",
-    "metaworld/window-open-v2",
-    "metaworld/window-close-v2",
+  ]
+  seed: [
+    0, 2, 4, 6, 8,  # door-close-v2
+    0, 2, 4, 6, 8,  # door-lock-v2
+    0, 2, 4, 6, 8,  # door-open-v2
+    0, 2, 4, 6, 8,  # door-unlock-v2
+    0, 2, 4, 6, 8,  # drawer-open-v2
+    0, 2, 4, 6, 8,  # faucet-open-v2
+    0, 2, 4, 6, 8,  # hammer-v2
+    0, 2, 4, 6, 8,  # window-open-v2
+    0,              # peg-insert-side-v2
   ]
