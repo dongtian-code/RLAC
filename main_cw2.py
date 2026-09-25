@@ -1041,13 +1041,36 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
             if os.path.exists(tmp_dst):
                 os.remove(tmp_dst)
 
+    def _periodic_checkpoint_phase(self, cw_config):
+        """Offset of this rep's periodic checkpoints within the save interval.
+
+        Every rep packed into one Slurm job would otherwise checkpoint at the same
+        iteration and -- running at the same speed -- at the same moment. With the
+        full replay buffer in it a checkpoint is several GB, and a rep that is
+        writing one cannot act on a signal. A SIGTERM that lands while ALL of them
+        are writing leaves nobody to submit the cancel-mode replacement within
+        KillWait (30 s on comgpu), and the chain ends. Spread over the interval, at
+        most one rep is writing at any time. Where the checkpoints land does not
+        change what is trained.
+        """
+        interval = self.save_model_interval
+        raw = cw_config.get('_cw2_job_task_ids')
+        current = cw_config.get('_cw2_job_task_id')
+        if interval <= 1 or not raw or current is None:
+            return 0
+        task_ids = [self._barrier_task_id(t) for t in raw]
+        current = self._barrier_task_id(current)
+        if current not in task_ids:
+            return 0
+        return (task_ids.index(current) * interval) // len(task_ids)
+
     def _save_checkpoint(self, cw_config, force=False):
         if self.save_model_dir is None:
             return None
         n = self.n_completed
         should_save = (
             force
-            or n % self.save_model_interval == 0
+            or (n + getattr(self, '_checkpoint_phase', 0)) % self.save_model_interval == 0
             or n >= cw_config['iterations']
         )
         if not should_save:
@@ -1148,6 +1171,7 @@ class RLACExperiment(experiment.AbstractIterativeExperiment):
             self.save_model_dir = os.path.join(cw_config['_rep_log_path'], 'model')
         os.makedirs(self.save_model_dir, exist_ok=True)
         self.save_model_interval = max(cw_config['iterations'] // cw_config.get('num_checkpoints', 20), 1)
+        self._checkpoint_phase = self._periodic_checkpoint_phase(cw_config)
         self.overwrite_checkpoints = _bool(cw_config.get('overwrite_checkpoints', False))
 
         # --- env / data ---------------------------------------------------------
