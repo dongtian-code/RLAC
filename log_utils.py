@@ -99,7 +99,12 @@ def setup_wandb(
         config: Config dict to log. Defaults to the current absl flag dict.
     """
     wandb_output_dir = tempfile.mkdtemp()
-    tags = [group] if group is not None else None
+    # W&B rejects a tag longer than 64 characters with a 400 from upsertBucket,
+    # which fails wandb.init and with it every rep of the job (25.Sep: the group
+    # "[rlac] boxpushing randinit dense 5M, 4envs, default critic, comgpu 250926"
+    # is 73). The group carries the same information, so a group that is too long
+    # to double as a tag just goes untagged.
+    tags = [group] if group is not None and 0 < len(group) <= 64 else None
 
     init_kwargs = dict(
         config=config if config is not None else get_flag_dict(),
